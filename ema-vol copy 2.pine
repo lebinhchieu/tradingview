@@ -1,0 +1,61 @@
+//@version=6
+indicator("EMA, Vol, VWAP", overlay=true, max_lines_count=500, max_labels_count=500, max_bars_back=5000)
+
+// MA Settings
+matype = input.string(defval = "EMA", title = "MA Type", options = ["EMA", "SMA"], group="MA Settings")
+
+// Volume Settings
+volMaLength = input.int(30, title="Volume MA Length", minval=1, group="Volume Settings")
+volMultiplier1 = input.float(1.5, title="Volume Multiplier 1", minval=1, group="Volume Settings")
+volMultiplier2 = input.float(2, title="Volume Multiplier 2", minval=1, group="Volume Settings")
+
+// MA
+ma20 = matype == "EMA" ? ta.ema(close, 20) : ta.sma(close, 20)
+ma50 = matype == "EMA" ? ta.ema(close, 50) : ta.sma(close, 50)
+ma100 = matype == "EMA" ? ta.ema(close, 100) : ta.sma(close, 100)
+ma200 = matype == "EMA" ? ta.ema(close, 200) : ta.sma(close, 200)
+ma20Plot = plot(ma20, title="MA 20", color = color.new(#4caf50, 70))
+ma50Plot = plot(ma50, title="MA 50", color = color.new(#ffeb3b, 70))
+ma100Plot = plot(ma100, title="MA 100", color = color.new(#f44336, 70))
+ma200Plot = plot(ma200, title="MA 200", color = color.new(#9c27b0, 70))
+
+// Vol
+var color volBullishBase = #4caf50
+var color volBearishBase = #f44336
+var color volBullishHigh = #a5d6a7
+var color volBearishHigh = #ef9a9a
+
+volMa = ta.ema(volume, volMaLength)
+hasLargeVol1 = volume > volMultiplier1 * volMa
+hasLargeVol2 = volume > volMultiplier2 * volMa
+barcolor(hasLargeVol1 ? (close > open ? (hasLargeVol2 ? volBullishHigh : volBullishBase) : (hasLargeVol2 ? volBearishHigh : volBearishBase)) : na, title="Volume Bar Color")
+
+// VWAP
+hideonDWM = input(false, title="Hide VWAP on 1D or Above", group="VWAP Settings", display = display.data_window)
+src = input(title = "Source", defval = hlc3, group="VWAP Settings", display = display.data_window)
+offset = input.int(0, title="Offset", group="VWAP Settings", minval=0, display = display.data_window)
+
+cumVolume = ta.cum(volume)
+if barstate.islast and cumVolume == 0
+    runtime.error("No volume is provided by the data vendor.")
+
+// Session VWAP
+isNewSession = timeframe.change("D")
+if na(src[1])
+	isNewSession := true
+
+float vwapSession = na
+if not (hideonDWM and timeframe.isdwm)
+    vwapSession := ta.vwap(src, isNewSession)
+
+// Week VWAP
+isNewWeek = timeframe.change("W")
+if na(src[1])
+	isNewWeek := true
+
+float vwapWeek = na
+if not (hideonDWM and timeframe.isdwm)
+    vwapWeek := ta.vwap(src, isNewWeek)
+
+plot(vwapSession, title = "VWAP Session", color = color.new(#2962FF, 70), offset = offset, linewidth = 2)
+plot(vwapWeek, title = "VWAP Week", color = color.new(#FF6D00, 70), offset = offset, linewidth = 2)
