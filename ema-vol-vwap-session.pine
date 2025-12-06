@@ -131,7 +131,6 @@ use_exchange = input.bool(false, 'Use Exchange Timezone', group = 'Timezone')
 
 //Range Label Option (background & outline removed per request)
 show_txt = input.bool(true, 'Range Label', group = 'Ranges Settings')
-predraw_sessions = input.bool(true, 'Pre-draw Current & Next Session', group = 'Ranges Settings')
 
 float chartTFInMinutes = timeframe.in_seconds() / 60
 
@@ -210,9 +209,8 @@ get_vwap(session) =>
     [num, den]
 
 //Set session range
-get_range(session, session_name, session_css, session_len_ms)=>
+get_range(session, session_name, session_css)=>
     var int t = 0 
-    var int session_end = na
     var float max = high
     var float min = low
     var box bx = na
@@ -220,15 +218,13 @@ get_range(session, session_name, session_css, session_len_ms)=>
 
     if session > session[1]
         t := time
-        session_end := t + session_len_ms
         max := high
         min := low
 
-        bx := box.new(t, max, session_end, min
+        bx := box.new(bar_index, max, bar_index, min
            , bgcolor = na
            , border_color = session_css
            , border_style = line.style_dotted)
-           , xloc = xloc.bar_time)
 
         if show_txt
             lbl := label.new(t, max, session_name
@@ -243,49 +239,12 @@ get_range(session, session_name, session_css, session_len_ms)=>
         min := math.min(low, min)
 
         box.set_top(bx, max)
-        box.set_right(bx, session_end)
-        box.set_rightbottom(bx, session_end, min)
+        box.set_rightbottom(bx, bar_index, min)
 
         if show_txt
-            label.set_xy(lbl, int(math.avg(t, session_end)), max)
+            label.set_xy(lbl, int(math.avg(t, time)), max)
 
     [session == 0 ? max : na, session == 0 ? min : na]
-
-//Parse session string to minutes and duration
-get_session_meta(sess_str) =>
-    sh = str.tonumber(str.substring(sess_str, 0, 2))
-    sm = str.tonumber(str.substring(sess_str, 2, 4))
-    eh = str.tonumber(str.substring(sess_str, 5, 7))
-    em = str.tonumber(str.substring(sess_str, 7, 9))
-    start_min = sh * 60 + sm
-    end_min = eh * 60 + em
-    len_min = end_min - start_min
-    len_min := len_min <= 0 ? len_min + 24 * 60 : len_min
-    [start_min, end_min, len_min]
-
-//Get upcoming session window based on current day/time
-get_upcoming_window(start_min, len_min, tz_str) =>
-    sess_start_today = timestamp(tz_str, year(time, tz_str), month(time, tz_str), dayofmonth(time, tz_str), start_min / 60, start_min % 60)
-    sess_end_today = sess_start_today + len_min * 60 * 1000
-    next_start = timenow > sess_end_today ? sess_start_today + 24 * 60 * 60 * 1000 : sess_start_today
-    next_end = next_start + len_min * 60 * 1000
-    [next_start, next_end]
-
-//Lightweight preview box for upcoming session time window
-update_preview_box(start_ms, end_ms, css, bx_ref)=>
-    float pad = math.max(ta.atr(14), syminfo.mintick * 25)
-    y_top = close + pad * 3
-    y_bot = close - pad * 3
-    if na(bx_ref)
-        bx_ref := box.new(start_ms, y_top, end_ms, y_bot
-           , xloc = xloc.bar_time
-           , bgcolor = color.new(css, 92)
-           , border_color = color.new(css, 80)
-           , border_style = line.style_dashed)
-    else
-        box.set_lefttop(bx_ref, start_ms, y_top)
-        box.set_rightbottom(bx_ref, end_ms, y_bot)
-    bx_ref
 
 //-----------------------------------------------------------------------------}
 //Sessions
@@ -299,16 +258,6 @@ is_sesa = math.sign(nz(time(tf, sesa_ses, tz)))
 is_sesb = math.sign(nz(time(tf, sesb_ses, tz)))
 is_sesc = math.sign(nz(time(tf, sesc_ses, tz)))
 is_sesd = math.sign(nz(time(tf, sesd_ses, tz)))
-
-[sesa_start_min, sesa_end_min, sesa_len_min] = get_session_meta(sesa_ses)
-[sesb_start_min, sesb_end_min, sesb_len_min] = get_session_meta(sesb_ses)
-[sesc_start_min, sesc_end_min, sesc_len_min] = get_session_meta(sesc_ses)
-[sesd_start_min, sesd_end_min, sesd_len_min] = get_session_meta(sesd_ses)
-
-sesa_len_ms = sesa_len_min * 60 * 1000
-sesb_len_ms = sesb_len_min * 60 * 1000
-sesc_len_ms = sesc_len_min * 60 * 1000
-sesd_len_ms = sesd_len_min * 60 * 1000
 
 //-----------------------------------------------------------------------------}
 //Overlays
@@ -342,4 +291,3 @@ if chartTFInMinutes <= 15 and show_sesd
     [max, min] = get_range(is_sesd, sesd_txt, sesd_css)
     max_sesd := max
     min_sesd := min
-
