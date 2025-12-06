@@ -97,7 +97,7 @@ lowerBandPlot = plot(showVwapSession ? lowerBand : na, title="Session VWAP Lower
 show_sesa = input.bool(true, '', inline = 'sesa', group = 'Session A')
 sesa_txt = input.string('New York', '', inline = 'sesa', group = 'Session A')
 sesa_ses = input.session('1300-2200', '', inline = 'sesa', group = 'Session A')
-sesa_css = input.color(#ff5d00, '', inline = 'sesa', group = 'Session A')
+sesa_css = input.color(color.new(#ff5d00, 50), '', inline = 'sesa', group = 'Session A')
 
 // Session A range always enabled
 
@@ -105,7 +105,7 @@ sesa_css = input.color(#ff5d00, '', inline = 'sesa', group = 'Session A')
 show_sesb = input.bool(true, '', inline = 'sesb', group = 'Session B')
 sesb_txt = input.string('London', '', inline = 'sesb', group = 'Session B')
 sesb_ses = input.session('0700-1600', '', inline = 'sesb', group = 'Session B')
-sesb_css = input.color(#2157f3, '', inline = 'sesb', group = 'Session B')
+sesb_css = input.color(color.new(#2157f3, 50), '', inline = 'sesb', group = 'Session B')
 
 // Session B range always enabled
 
@@ -113,7 +113,7 @@ sesb_css = input.color(#2157f3, '', inline = 'sesb', group = 'Session B')
 show_sesc = input.bool(true, '', inline = 'sesc', group = 'Session C')
 sesc_txt = input.string('Tokyo', '', inline = 'sesc', group = 'Session C')
 sesc_ses = input.session('0000-0900', '', inline = 'sesc', group = 'Session C')
-sesc_css = input.color(#e91e63, '', inline = 'sesc', group = 'Session C')
+sesc_css = input.color(color.new(#e91e63, 50), '', inline = 'sesc', group = 'Session C')
 
 // Session C range always enabled
 
@@ -121,7 +121,7 @@ sesc_css = input.color(#e91e63, '', inline = 'sesc', group = 'Session C')
 show_sesd = input.bool(true, '', inline = 'sesd', group = 'Session D')
 sesd_txt = input.string('Sydney', '', inline = 'sesd', group = 'Session D')
 sesd_ses = input.session('2100-0600', '', inline = 'sesd', group = 'Session D')
-sesd_css = input.color(#ffeb3b, '', inline = 'sesd', group = 'Session D')
+sesd_css = input.color(color.new(#ffeb3b, 50), '', inline = 'sesd', group = 'Session D')
 
 // Session D range always enabled
 
@@ -209,42 +209,105 @@ get_vwap(session) =>
     [num, den]
 
 //Set session range
-get_range(session, session_name, session_css)=>
-    var int t = 0 
-    var float max = high
-    var float min = low
-    var box bx = na
-    var label lbl = na 
+get_session_bars(session_str)=>
+    parts = str.split(session_str, "-")
+    start_str = array.get(parts, 0)
+    end_str = array.get(parts, 1)
 
-    if session > session[1]
-        t := time
+    start_minutes = str.tonumber(str.substring(start_str, 0, 2)) * 60 + str.tonumber(str.substring(start_str, 2, 4))
+    end_minutes = str.tonumber(str.substring(end_str, 0, 2)) * 60 + str.tonumber(str.substring(end_str, 2, 4))
+    duration_minutes = end_minutes - start_minutes
+    duration_minutes := duration_minutes <= 0 ? duration_minutes + 1440 : duration_minutes
+
+    bars = math.max(1, math.ceil(duration_minutes / chartTFInMinutes))
+    int(bars)
+
+//Pre-draw session ranges: show current session box and preview the next session one day ahead
+get_range(session, session_name, session_css, session_bars)=>
+    var int start_time = na
+    var float max = na
+    var float min = na
+    var box cur_box = na
+    var box next_box = na
+    var label lbl = na
+
+    session_ms = int(session_bars * chartTFInMinutes * 60000)
+    day_ms = 86400000
+
+    new_session = session > session[1]
+    active_session = session != 0 and session == session[1]
+    ended_session = session == 0 and session[1] != 0
+
+    if new_session
+        start_time := time
         max := high
         min := low
 
-        bx := box.new(bar_index, max, bar_index, min
-           , bgcolor = na
-           , border_color = session_css
-           , border_style = line.style_dotted)
+        if na(cur_box)
+            cur_box := box.new(start_time, max, start_time + session_ms, min
+               , xloc = xloc.bar_time
+               , bgcolor = na
+               , border_color = session_css
+               , border_style = line.style_dotted)
+        else
+            box.set_lefttop(cur_box, start_time, max)
+            box.set_rightbottom(cur_box, start_time + session_ms, min)
+            box.set_bgcolor(cur_box, na)
+            box.set_border_color(cur_box, session_css)
+            box.set_border_style(cur_box, line.style_dotted)
+
+        next_start = start_time + day_ms
+        if na(next_box)
+            next_box := box.new(next_start, max, next_start + session_ms, min
+               , xloc = xloc.bar_time
+               , bgcolor = na
+               , border_color = session_css
+               , border_style = line.style_dotted)
+        else
+            box.set_lefttop(next_box, next_start, max)
+            box.set_rightbottom(next_box, next_start + session_ms, min)
+            box.set_bgcolor(next_box, na)
+            box.set_border_color(next_box, session_css)
+            box.set_border_style(next_box, line.style_dotted)
 
         if show_txt
-            lbl := label.new(t, max, session_name
-               , xloc = xloc.bar_time
-               , textcolor = session_css
-               , style = label.style_label_down
-               , color = color.new(color.white, 100)
-               , size = size.tiny)
+            mid_time = start_time + session_ms / 2
+            if na(lbl)
+                lbl := label.new(mid_time, max, session_name
+                   , xloc = xloc.bar_time
+                   , textcolor = session_css
+                   , style = label.style_label_down
+                   , color = color.new(color.white, 100)
+                   , size = size.tiny)
+            else
+                label.set_xy(lbl, mid_time, max)
+                label.set_text(lbl, session_name)
+                label.set_textcolor(lbl, session_css)
 
-    if session != 0 and session == session[1]
+    if active_session
         max := math.max(high, max)
         min := math.min(low, min)
 
-        box.set_top(bx, max)
-        box.set_rightbottom(bx, bar_index, min)
+        if not na(cur_box)
+            box.set_top(cur_box, max)
+            box.set_bottom(cur_box, min)
 
-        if show_txt
-            label.set_xy(lbl, int(math.avg(t, time)), max)
+        if show_txt and not na(lbl)
+            label.set_xy(lbl, start_time + session_ms / 2, max)
 
-    [session == 0 ? max : na, session == 0 ? min : na]
+    if ended_session
+        end_time = time[1]
+
+        if not na(cur_box)
+            box.set_right(cur_box, end_time)
+            box.set_border_style(cur_box, line.style_dotted)
+            box.set_bgcolor(cur_box, na)
+
+        if not na(next_box)
+            box.set_top(next_box, max)
+            box.set_bottom(next_box, min)
+
+    [ended_session ? max : na, ended_session ? min : na]
 
 //-----------------------------------------------------------------------------}
 //Sessions
@@ -258,6 +321,11 @@ is_sesa = math.sign(nz(time(tf, sesa_ses, tz)))
 is_sesb = math.sign(nz(time(tf, sesb_ses, tz)))
 is_sesc = math.sign(nz(time(tf, sesc_ses, tz)))
 is_sesd = math.sign(nz(time(tf, sesd_ses, tz)))
+
+sesa_bars = get_session_bars(sesa_ses)
+sesb_bars = get_session_bars(sesb_ses)
+sesc_bars = get_session_bars(sesc_ses)
+sesd_bars = get_session_bars(sesd_ses)
 
 //-----------------------------------------------------------------------------}
 //Overlays
@@ -273,21 +341,21 @@ var float min_sesd = na
       
 //Ranges
 if chartTFInMinutes <= 15 and show_sesa
-    [max, min] = get_range(is_sesa, sesa_txt, sesa_css)
+    [max, min] = get_range(is_sesa, sesa_txt, sesa_css, sesa_bars)
     max_sesa := max
     min_sesa := min
 
 if chartTFInMinutes <= 15 and show_sesb
-    [max, min] = get_range(is_sesb, sesb_txt, sesb_css)
+    [max, min] = get_range(is_sesb, sesb_txt, sesb_css, sesb_bars)
     max_sesb := max
     min_sesb := min
 
 if chartTFInMinutes <= 15 and show_sesc
-    [max, min] = get_range(is_sesc, sesc_txt, sesc_css)
+    [max, min] = get_range(is_sesc, sesc_txt, sesc_css, sesc_bars)
     max_sesc := max
     min_sesc := min
 
 if chartTFInMinutes <= 15 and show_sesd
-    [max, min] = get_range(is_sesd, sesd_txt, sesd_css)
+    [max, min] = get_range(is_sesd, sesd_txt, sesd_css, sesd_bars)
     max_sesd := max
     min_sesd := min
