@@ -321,44 +321,25 @@ var float max_sesc = na
 var float min_sesc = na
 var float max_sesd = na
 var float min_sesd = na
-
-var box preview_sesa = na
-var box preview_sesb = na
-var box preview_sesc = na
-var box preview_sesd = na
       
 //Ranges
 if chartTFInMinutes <= 15 and show_sesa
-    [max, min] = get_range(is_sesa, sesa_txt, sesa_css, sesa_len_ms)
+    [max, min] = get_range(is_sesa, sesa_txt, sesa_css)
     max_sesa := max
     min_sesa := min
 
 if chartTFInMinutes <= 15 and show_sesb
-    [max, min] = get_range(is_sesb, sesb_txt, sesb_css, sesb_len_ms)
+    [max, min] = get_range(is_sesb, sesb_txt, sesb_css)
     max_sesb := max
     min_sesb := min
 
 if chartTFInMinutes <= 15 and show_sesc
-    [max, min] = get_range(is_sesc, sesc_txt, sesc_css, sesc_len_ms)
+    [max, min] = get_range(is_sesc, sesc_txt, sesc_css)
     max_sesc := max
     min_sesc := min
 
 if chartTFInMinutes <= 15 and show_sesd
-    [max, min] = get_range(is_sesd, sesd_txt, sesd_css, sesd_len_ms)
+    [max, min] = get_range(is_sesd, sesd_txt, sesd_css)
     max_sesd := max
     min_sesd := min
-
-if predraw_sessions and chartTFInMinutes <= 15
-    if show_sesa
-        [sesa_start_ms, sesa_end_ms] = get_upcoming_window(sesa_start_min, sesa_len_min, tz)
-        preview_sesa := update_preview_box(sesa_start_ms, sesa_end_ms, sesa_css, preview_sesa)
-    if show_sesb
-        [sesb_start_ms, sesb_end_ms] = get_upcoming_window(sesb_start_min, sesb_len_min, tz)
-        preview_sesb := update_preview_box(sesb_start_ms, sesb_end_ms, sesb_css, preview_sesb)
-    if show_sesc
-        [sesc_start_ms, sesc_end_ms] = get_upcoming_window(sesc_start_min, sesc_len_min, tz)
-        preview_sesc := update_preview_box(sesc_start_ms, sesc_end_ms, sesc_css, preview_sesc)
-    if show_sesd
-        [sesd_start_ms, sesd_end_ms] = get_upcoming_window(sesd_start_min, sesd_len_min, tz)
-        preview_sesd := update_preview_box(sesd_start_ms, sesd_end_ms, sesd_css, preview_sesd)
 
