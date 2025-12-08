@@ -97,7 +97,7 @@ lowerBandPlot = plot(showVwapSession ? lowerBand : na, title="Session VWAP Lower
 show_sesa = input.bool(true, '', inline = 'sesa', group = 'Session A')
 sesa_txt = input.string('New York', '', inline = 'sesa', group = 'Session A')
 sesa_ses = input.session('1300-2200', '', inline = 'sesa', group = 'Session A')
-sesa_css = input.color(color.new(#ff5d00, 50), '', inline = 'sesa', group = 'Session A')
+sesa_css = input.color(#ff5d00, '', inline = 'sesa', group = 'Session A')
 
 // Session A range always enabled
 
@@ -105,7 +105,7 @@ sesa_css = input.color(color.new(#ff5d00, 50), '', inline = 'sesa', group = 'Ses
 show_sesb = input.bool(true, '', inline = 'sesb', group = 'Session B')
 sesb_txt = input.string('London', '', inline = 'sesb', group = 'Session B')
 sesb_ses = input.session('0700-1600', '', inline = 'sesb', group = 'Session B')
-sesb_css = input.color(color.new(#2157f3, 50), '', inline = 'sesb', group = 'Session B')
+sesb_css = input.color(#2157f3, '', inline = 'sesb', group = 'Session B')
 
 // Session B range always enabled
 
@@ -113,7 +113,7 @@ sesb_css = input.color(color.new(#2157f3, 50), '', inline = 'sesb', group = 'Ses
 show_sesc = input.bool(true, '', inline = 'sesc', group = 'Session C')
 sesc_txt = input.string('Tokyo', '', inline = 'sesc', group = 'Session C')
 sesc_ses = input.session('0000-0900', '', inline = 'sesc', group = 'Session C')
-sesc_css = input.color(color.new(#e91e63, 50), '', inline = 'sesc', group = 'Session C')
+sesc_css = input.color(#e91e63, '', inline = 'sesc', group = 'Session C')
 
 // Session C range always enabled
 
@@ -121,7 +121,7 @@ sesc_css = input.color(color.new(#e91e63, 50), '', inline = 'sesc', group = 'Ses
 show_sesd = input.bool(true, '', inline = 'sesd', group = 'Session D')
 sesd_txt = input.string('Sydney', '', inline = 'sesd', group = 'Session D')
 sesd_ses = input.session('2100-0600', '', inline = 'sesd', group = 'Session D')
-sesd_css = input.color(color.new(#ffeb3b, 50), '', inline = 'sesd', group = 'Session D')
+sesd_css = input.color(#ffeb3b, '', inline = 'sesd', group = 'Session D')
 
 // Session D range always enabled
 
@@ -222,13 +222,19 @@ get_session_bars(session_str)=>
     bars = math.max(1, math.ceil(duration_minutes / chartTFInMinutes))
     int(bars)
 
-//Pre-draw session ranges: show current session box and preview the next session one day ahead
+//Pre-draw session ranges using lines: show current session outline and preview the next session one day ahead
 get_range(session, session_name, session_css, session_bars)=>
     var int start_time = na
     var float max = na
     var float min = na
-    var box cur_box = na
-    var box next_box = na
+    var line top_line = na
+    var line bottom_line = na
+    var line left_line = na
+    var line right_line = na
+    var line next_top_line = na
+    var line next_bottom_line = na
+    var line next_left_line = na
+    var line next_right_line = na
     var label lbl = na
 
     session_ms = int(session_bars * chartTFInMinutes * 60000)
@@ -242,33 +248,41 @@ get_range(session, session_name, session_css, session_bars)=>
         start_time := time
         max := high
         min := low
+        end_time = start_time + session_ms
 
-        if na(cur_box)
-            cur_box := box.new(start_time, max, start_time + session_ms, min
-               , xloc = xloc.bar_time
-               , bgcolor = na
-               , border_color = session_css
-               , border_style = line.style_dotted)
-        else
-            box.set_lefttop(cur_box, start_time, max)
-            box.set_rightbottom(cur_box, start_time + session_ms, min)
-            box.set_bgcolor(cur_box, na)
-            box.set_border_color(cur_box, session_css)
-            box.set_border_style(cur_box, line.style_dotted)
+        // Delete old lines if recreating
+        if not na(top_line)
+            line.delete(top_line)
+        if not na(bottom_line)
+            line.delete(bottom_line)
+        if not na(left_line)
+            line.delete(left_line)
+        if not na(right_line)
+            line.delete(right_line)
 
+        // Create current session lines
+        top_line := line.new(start_time, max, end_time, max, xloc=xloc.bar_time, color=session_css, style=line.style_dotted)
+        bottom_line := line.new(start_time, min, end_time, min, xloc=xloc.bar_time, color=session_css, style=line.style_dotted)
+        left_line := line.new(start_time, max, start_time, min, xloc=xloc.bar_time, color=session_css, style=line.style_dotted)
+        right_line := line.new(end_time, max, end_time, min, xloc=xloc.bar_time, color=session_css, style=line.style_dotted)
+
+        // Delete old next session lines if recreating
+        if not na(next_top_line)
+            line.delete(next_top_line)
+        if not na(next_bottom_line)
+            line.delete(next_bottom_line)
+        if not na(next_left_line)
+            line.delete(next_left_line)
+        if not na(next_right_line)
+            line.delete(next_right_line)
+
+        // Create next session lines (preview for tomorrow)
         next_start = start_time + day_ms
-        if na(next_box)
-            next_box := box.new(next_start, max, next_start + session_ms, min
-               , xloc = xloc.bar_time
-               , bgcolor = na
-               , border_color = session_css
-               , border_style = line.style_dotted)
-        else
-            box.set_lefttop(next_box, next_start, max)
-            box.set_rightbottom(next_box, next_start + session_ms, min)
-            box.set_bgcolor(next_box, na)
-            box.set_border_color(next_box, session_css)
-            box.set_border_style(next_box, line.style_dotted)
+        next_end = next_start + session_ms
+        next_top_line := line.new(next_start, max, next_end, max, xloc=xloc.bar_time, color=session_css, style=line.style_dotted)
+        next_bottom_line := line.new(next_start, min, next_end, min, xloc=xloc.bar_time, color=session_css, style=line.style_dotted)
+        next_left_line := line.new(next_start, max, next_start, min, xloc=xloc.bar_time, color=session_css, style=line.style_dotted)
+        next_right_line := line.new(next_end, max, next_end, min, xloc=xloc.bar_time, color=session_css, style=line.style_dotted)
 
         if show_txt
             mid_time = start_time + session_ms / 2
@@ -288,24 +302,41 @@ get_range(session, session_name, session_css, session_bars)=>
         max := math.max(high, max)
         min := math.min(low, min)
 
-        if not na(cur_box)
-            box.set_top(cur_box, max)
-            box.set_bottom(cur_box, min)
+        if not na(top_line)
+            line.set_y1(top_line, max)
+            line.set_y2(top_line, max)
+        if not na(bottom_line)
+            line.set_y1(bottom_line, min)
+            line.set_y2(bottom_line, min)
+        if not na(left_line)
+            line.set_y1(left_line, max)
+            line.set_y2(left_line, min)
+        if not na(right_line)
+            line.set_y1(right_line, max)
+            line.set_y2(right_line, min)
 
         if show_txt and not na(lbl)
             label.set_xy(lbl, start_time + session_ms / 2, max)
 
     if ended_session
-        end_time = time[1]
+        end_time = time
 
-        if not na(cur_box)
-            box.set_right(cur_box, end_time)
-            box.set_border_style(cur_box, line.style_dotted)
-            box.set_bgcolor(cur_box, na)
+        if not na(right_line)
+            line.set_x1(right_line, end_time)
+            line.set_x2(right_line, end_time)
 
-        if not na(next_box)
-            box.set_top(next_box, max)
-            box.set_bottom(next_box, min)
+        if not na(next_top_line)
+            line.set_y1(next_top_line, max)
+            line.set_y2(next_top_line, max)
+        if not na(next_bottom_line)
+            line.set_y1(next_bottom_line, min)
+            line.set_y2(next_bottom_line, min)
+        if not na(next_left_line)
+            line.set_y1(next_left_line, max)
+            line.set_y2(next_left_line, min)
+        if not na(next_right_line)
+            line.set_y1(next_right_line, max)
+            line.set_y2(next_right_line, min)
 
     [ended_session ? max : na, ended_session ? min : na]
 
