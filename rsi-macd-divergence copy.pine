@@ -1,0 +1,275 @@
+//@version=6
+indicator(title="RSI + MACD Divergence", shorttitle="RSI+MACD Div", format=format.price, precision=2, timeframe="", timeframe_gaps=true)
+
+// ─── RSI Settings ────────────────────────────────────────────────────────────
+rsiLengthInput = input.int(14,  "RSI Length", minval=1,  group="RSI Settings")
+rsiSourceInput = input.source(close, "Source",           group="RSI Settings")
+obLevel        = input.int(70, "Overbought Level",       group="RSI Settings")
+osLevel        = input.int(30, "Oversold Level",         group="RSI Settings")
+
+// ─── MACD Settings ───────────────────────────────────────────────────────────
+macdSourceInput = input.source(close, "Source",          group="MACD Settings")
+fastLenInput    = input.int(12, "Fast Length",  minval=1, group="MACD Settings")
+slowLenInput    = input.int(26, "Slow Length",  minval=1, group="MACD Settings")
+sigLenInput     = input.int(9,  "Signal Length", minval=1, group="MACD Settings")
+normLen         = input.int(100, "Normalize Lookback", minval=10, group="MACD Settings", tooltip="Lookback bars used to auto-scale MACD/histogram to ±20 around the 50 baseline.")
+
+// ─── Divergence Settings ─────────────────────────────────────────────────────
+lookbackRight  = input.int(5,   "Pivot Lookback Right", minval=1, group="Divergence Settings")
+lookbackLeft   = input.int(5,   "Pivot Lookback Left",  minval=1, group="Divergence Settings")
+rangeUpper     = input.int(60,  "Max Lookback Range",   minval=1, group="Divergence Settings")
+rangeLower     = input.int(5,   "Min Lookback Range",   minval=1, group="Divergence Settings")
+showDivLabels  = input.bool(false, "Show Divergence Labels", group="Divergence Settings")
+
+// ─── RSI Calculation ─────────────────────────────────────────────────────────
+rsiChange = ta.change(rsiSourceInput)
+rsiUp     = ta.rma(math.max(rsiChange, 0), rsiLengthInput)
+rsiDown   = ta.rma(-math.min(rsiChange, 0), rsiLengthInput)
+rsi       = rsiDown == 0 ? 100 : rsiUp == 0 ? 0 : 100 - (100 / (1 + rsiUp / rsiDown))
+
+// ─── MACD Calculation ────────────────────────────────────────────────────────
+maFast = ta.ema(macdSourceInput, fastLenInput)
+maSlow = ta.ema(macdSourceInput, slowLenInput)
+macd   = maFast - maSlow
+signal = ta.ema(macd, sigLenInput)
+hist   = macd - signal
+
+// ─── MACD Normalized Display Values ─────────────────────────────────────────
+// Histogram: ±10 (40–60), Lines: ±12 (38–62) — stays well within 30/70 bounds
+normFactorHist  = ta.highest(math.abs(hist),   normLen)
+normFactorLine  = math.max(ta.highest(math.abs(macd), normLen), ta.highest(math.abs(signal), normLen))
+histDisp   = normFactorHist > 0 ? (hist   / normFactorHist) * 10.0 : 0.0
+macdDisp   = normFactorLine > 0 ? (macd   / normFactorLine) * 12.0 : 0.0
+signalDisp = normFactorLine > 0 ? (signal / normFactorLine) * 12.0 : 0.0
+
+histDispLBR    = histDisp[lookbackRight]
+macdDispLBR    = macdDisp[lookbackRight]
+
+// ─── Divergence Helper ───────────────────────────────────────────────────────
+_inRange(bool cond) =>
+    bars = ta.barssince(cond)
+    rangeLower <= bars and bars <= rangeUpper
+
+// ─── RSI Divergence Detection ────────────────────────────────────────────────
+rsiLBR  = rsi[lookbackRight]
+lowLBR  = low[lookbackRight]
+highLBR = high[lookbackRight]
+
+rsiPlFound = not na(ta.pivotlow(rsi,  lookbackLeft, lookbackRight))
+rsiPhFound = not na(ta.pivothigh(rsi, lookbackLeft, lookbackRight))
+
+// RSI Bullish: price lower low + RSI higher low
+rsiHL      = rsiLBR > ta.valuewhen(rsiPlFound, rsiLBR, 1) and _inRange(rsiPlFound[1])
+rsiPriceLL = lowLBR  < ta.valuewhen(rsiPlFound, lowLBR,  1)
+rsiBull    = rsiPriceLL and rsiHL  and rsiPlFound
+
+// RSI Bearish: price higher high + RSI lower high
+rsiLH      = rsiLBR < ta.valuewhen(rsiPhFound, rsiLBR, 1) and _inRange(rsiPhFound[1])
+rsiPriceHH = highLBR > ta.valuewhen(rsiPhFound, highLBR, 1)
+rsiBear    = rsiPriceHH and rsiLH and rsiPhFound
+
+// ─── MACD Histogram Divergence Detection ─────────────────────────────────────
+histLBR = hist[lookbackRight]
+
+macdPlFound = not na(ta.pivotlow(hist,  lookbackLeft, lookbackRight))
+macdPhFound = not na(ta.pivothigh(hist, lookbackLeft, lookbackRight))
+
+// MACD Bullish: price lower low + histogram higher low
+macdHL      = histLBR > ta.valuewhen(macdPlFound, histLBR, 1) and _inRange(macdPlFound[1])
+macdPriceLL = lowLBR  < ta.valuewhen(macdPlFound, lowLBR,  1)
+macdBull    = macdPriceLL and macdHL and macdPlFound
+
+// MACD Bearish: price higher high + histogram lower high
+macdLH      = histLBR < ta.valuewhen(macdPhFound, histLBR, 1) and _inRange(macdPhFound[1])
+macdPriceHH = highLBR > ta.valuewhen(macdPhFound, highLBR, 1)
+macdBear    = macdPriceHH and macdLH and macdPhFound
+
+// ─── MACD Line Divergence Detection ─────────────────────────────────────────
+macdLineLBR = macd[lookbackRight]
+
+macdLinePlFound = not na(ta.pivotlow(macd,  lookbackLeft, lookbackRight))
+macdLinePhFound = not na(ta.pivothigh(macd, lookbackLeft, lookbackRight))
+
+// MACD Line Bullish: price lower low + MACD line higher low
+macdLineHL      = macdLineLBR > ta.valuewhen(macdLinePlFound, macdLineLBR, 1) and _inRange(macdLinePlFound[1])
+macdLinePriceLL = lowLBR < ta.valuewhen(macdLinePlFound, lowLBR, 1)
+macdLineBull    = macdLinePriceLL and macdLineHL and macdLinePlFound
+
+// MACD Line Bearish: price higher high + MACD line lower high
+macdLineLH      = macdLineLBR < ta.valuewhen(macdLinePhFound, macdLineLBR, 1) and _inRange(macdLinePhFound[1])
+macdLinePriceHH = highLBR > ta.valuewhen(macdLinePhFound, highLBR, 1)
+macdLineBear    = macdLinePriceHH and macdLineLH and macdLinePhFound
+
+// ─── Color Constants ─────────────────────────────────────────────────────────
+noneColor    = color.new(color.white, 100)
+rsiBullColor = color.new(#00c853, 0)   // bright green  – RSI bullish
+rsiBearColor = color.new(#d50000, 0)   // bright red    – RSI bearish
+macdBullColor     = color.new(#00bcd4, 0)  // cyan          – MACD histogram bullish
+macdBearColor     = color.new(#ff6d00, 0)  // orange        – MACD histogram bearish
+macdLineBullColor = color.new(#1565c0, 0)  // dark blue     – MACD line bullish
+macdLineBearColor = color.new(#e91e63, 0)  // magenta       – MACD line bearish
+
+// ─── Plot order: Signal (back) → Histogram → MACD line → RSI (front/top) ────
+
+// RSI hlines (always behind plots)
+rsiUpperBand = hline(obLevel, "Overbought", color=color.new(#787B86, 20), linestyle=hline.style_dashed)
+rsiLowerBand = hline(osLevel, "Oversold",   color=color.new(#787B86, 20), linestyle=hline.style_dashed)
+fill(rsiUpperBand, rsiLowerBand, color=color.rgb(126, 87, 194, 95), title="RSI Background Fill")
+
+// Signal line — back
+plot(signalDisp + 50, "Signal Line", color=color.new(color.orange, 0), linewidth=1)
+
+// Histogram fills — behind MACD line
+histDispLine = histDisp + 50
+histPos      = histDisp >= 0 ? histDispLine : 50.0
+histNeg      = histDisp <  0 ? histDispLine : 50.0
+histPosCl    = hist > hist[1] ? color.new(#26a69a, 20) : color.new(#b2dfdb, 20)
+histNegCl    = hist > hist[1] ? color.new(#ffcdd2, 20) : color.new(#ff5252, 20)
+
+histPosPlot  = plot(histPos, "Hist+",     color=na, display=display.none)
+histNegPlot  = plot(histNeg, "Hist-",     color=na, display=display.none)
+histBasePlot = plot(50,      "Hist Base", color=na, display=display.none, editable=false)
+fill(histPosPlot, histBasePlot, color=histPosCl, title="Histogram Positive Fill")
+fill(histNegPlot, histBasePlot, color=histNegCl, title="Histogram Negative Fill")
+
+// MACD line — middle
+plot(macdDisp + 50, "MACD", color=color.new(color.blue, 0), linewidth=1)
+
+// RSI line + gradients — front/top
+rsiPlot     = plot(rsi, "RSI", color=#7E57C2)
+midLinePlot = plot(50, color=na, editable=false, display=display.none)
+fill(rsiPlot, midLinePlot, 100,     obLevel, top_color=color.new(color.green, 0),   bottom_color=color.new(color.green, 100), title="Overbought Gradient Fill")
+fill(rsiPlot, midLinePlot, osLevel, 0,       top_color=color.new(color.red,   100), bottom_color=color.new(color.red,   0),   title="Oversold Gradient Fill")
+
+// ─── RSI Divergence Plots ────────────────────────────────────────────────────
+plot(
+     rsiPlFound ? rsiLBR : na,
+     offset    = -lookbackRight,
+     title     = "RSI Bullish Divergence Line",
+     linewidth = 2,
+     color     = rsiBull ? rsiBullColor : noneColor,
+     display   = display.pane)
+
+plotshape(
+     rsiBull and showDivLabels ? rsiLBR : na,
+     offset    = -lookbackRight,
+     title     = "RSI Bullish Label",
+     text      = " RSI Bull ",
+     style     = shape.labelup,
+     location  = location.absolute,
+     color     = rsiBullColor,
+     textcolor = color.white,
+     size      = size.small,
+     display   = display.pane)
+
+plot(
+     rsiPhFound ? rsiLBR : na,
+     offset    = -lookbackRight,
+     title     = "RSI Bearish Divergence Line",
+     linewidth = 2,
+     color     = rsiBear ? rsiBearColor : noneColor,
+     display   = display.pane)
+
+plotshape(
+     rsiBear and showDivLabels ? rsiLBR : na,
+     offset    = -lookbackRight,
+     title     = "RSI Bearish Label",
+     text      = " RSI Bear ",
+     style     = shape.labeldown,
+     location  = location.absolute,
+     color     = rsiBearColor,
+     textcolor = color.white,
+     size      = size.small,
+     display   = display.pane)
+
+// ─── MACD Divergence Plots ───────────────────────────────────────────────────
+plot(
+     macdPlFound ? histDispLBR + 50 : na,
+     offset    = -lookbackRight,
+     title     = "MACD Bullish Divergence Line",
+     linewidth = 2,
+     color     = macdBull ? macdBullColor : noneColor,
+     display   = display.pane)
+
+plotshape(
+     macdBull and showDivLabels ? histDispLBR + 50 : na,
+     offset    = -lookbackRight,
+     title     = "MACD Bullish Label",
+     text      = " MACD Bull ",
+     style     = shape.labelup,
+     location  = location.absolute,
+     color     = macdBullColor,
+     textcolor = color.white,
+     size      = size.small,
+     display   = display.pane)
+
+plot(
+     macdPhFound ? histDispLBR + 50 : na,
+     offset    = -lookbackRight,
+     title     = "MACD Bearish Divergence Line",
+     linewidth = 2,
+     color     = macdBear ? macdBearColor : noneColor,
+     display   = display.pane)
+
+plotshape(
+     macdBear and showDivLabels ? histDispLBR + 50 : na,
+     offset    = -lookbackRight,
+     title     = "MACD Bearish Label",
+     text      = " MACD Bear ",
+     style     = shape.labeldown,
+     location  = location.absolute,
+     color     = macdBearColor,
+     textcolor = color.white,
+     size      = size.small,
+     display   = display.pane)
+
+// ─── MACD Line Divergence Plots ─────────────────────────────────────────────
+plot(
+     macdLinePlFound ? macdDispLBR + 50 : na,
+     offset    = -lookbackRight,
+     title     = "MACD Line Bullish Divergence",
+     linewidth = 2,
+     color     = macdLineBull ? macdLineBullColor : noneColor,
+     display   = display.pane)
+
+plotshape(
+     macdLineBull and showDivLabels ? macdDispLBR + 50 : na,
+     offset    = -lookbackRight,
+     title     = "MACD Line Bullish Label",
+     text      = " MACD-L Bull ",
+     style     = shape.labelup,
+     location  = location.absolute,
+     color     = macdLineBullColor,
+     textcolor = color.white,
+     size      = size.small,
+     display   = display.pane)
+
+plot(
+     macdLinePhFound ? macdDispLBR + 50 : na,
+     offset    = -lookbackRight,
+     title     = "MACD Line Bearish Divergence",
+     linewidth = 2,
+     color     = macdLineBear ? macdLineBearColor : noneColor,
+     display   = display.pane)
+
+plotshape(
+     macdLineBear and showDivLabels ? macdDispLBR + 50 : na,
+     offset    = -lookbackRight,
+     title     = "MACD Line Bearish Label",
+     text      = " MACD-L Bear ",
+     style     = shape.labeldown,
+     location  = location.absolute,
+     color     = macdLineBearColor,
+     textcolor = color.white,
+     size      = size.small,
+     display   = display.pane)
+
+// ─── Alerts ──────────────────────────────────────────────────────────────────
+alertcondition(rsiBull,       "RSI Bullish Divergence",       "RSI: Bullish Divergence detected")
+alertcondition(rsiBear,       "RSI Bearish Divergence",       "RSI: Bearish Divergence detected")
+alertcondition(macdBull,      "MACD Hist Bullish Divergence", "MACD Histogram: Bullish Divergence detected")
+alertcondition(macdBear,      "MACD Hist Bearish Divergence", "MACD Histogram: Bearish Divergence detected")
+alertcondition(macdLineBull,  "MACD Line Bullish Divergence", "MACD Line: Bullish Divergence detected")
+alertcondition(macdLineBear,  "MACD Line Bearish Divergence", "MACD Line: Bearish Divergence detected")
+alertcondition(rsiBull  or macdBull  or macdLineBull, "Any Bullish Divergence", "Bullish Divergence detected (RSI, MACD Hist, or MACD Line)")
+alertcondition(rsiBear  or macdBear  or macdLineBear, "Any Bearish Divergence", "Bearish Divergence detected (RSI, MACD Hist, or MACD Line)")

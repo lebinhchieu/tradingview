@@ -1,0 +1,714 @@
+//@version=6
+indicator(title="RSI + MACD Divergence", shorttitle="RSI+MACD Div", format=format.price, precision=2)
+
+// ─── RSI Settings ────────────────────────────────────────────────────────────
+rsiLengthInput = input.int(14,  "RSI Length", minval=1,  group="RSI Settings")
+rsiSourceInput = input.source(close, "Source",           group="RSI Settings")
+obLevel        = input.int(70, "Overbought Level",       group="RSI Settings")
+osLevel        = input.int(30, "Oversold Level",         group="RSI Settings")
+
+// ─── MACD Settings ───────────────────────────────────────────────────────────
+macdSourceInput = input.source(close, "Source",          group="MACD Settings")
+fastLenInput    = input.int(12, "Fast Length",  minval=1, group="MACD Settings")
+slowLenInput    = input.int(26, "Slow Length",  minval=1, group="MACD Settings")
+sigLenInput     = input.int(9,  "Signal Length", minval=1, group="MACD Settings")
+normPeriod      = input.int(200, "Norm Lookback Period", minval=20, group="MACD Settings")
+
+// ─── Divergence Settings ─────────────────────────────────────────────────────
+lookbackRight  = input.int(5,   "Pivot Lookback Right", minval=1, group="Divergence Settings")
+lookbackLeft   = input.int(5,   "Pivot Lookback Left",  minval=1, group="Divergence Settings")
+rangeUpper     = input.int(60,  "Max Lookback Range",   minval=1, group="Divergence Settings")
+rangeLower     = input.int(5,   "Min Lookback Range",   minval=1, group="Divergence Settings")
+showDivLabels  = input.bool(false, "Show Divergence Labels", group="Divergence Settings")
+
+// ─── MTF Table Settings ──────────────────────────────────────────────────────
+tablePos = input.string("top_left", "Table Position",
+     options=["top_left","top_right","bottom_left","bottom_right","top_center","bottom_center"],
+     group="MTF Table Settings")
+show1m   = input.bool(true,  "1m",  inline="tfs", group="MTF Table Settings")
+show5m   = input.bool(true,  "5m",  inline="tfs", group="MTF Table Settings")
+show15m  = input.bool(true,  "15m", inline="tfs", group="MTF Table Settings")
+show1h   = input.bool(true,  "1h",  inline="tfs", group="MTF Table Settings")
+show4h   = input.bool(true,  "4h",  inline="tfs", group="MTF Table Settings")
+
+// ─── RSI Calculation ─────────────────────────────────────────────────────────
+rsiChange = ta.change(rsiSourceInput)
+rsiUp     = ta.rma(math.max(rsiChange, 0), rsiLengthInput)
+rsiDown   = ta.rma(-math.min(rsiChange, 0), rsiLengthInput)
+rsi       = rsiDown == 0 ? 100 : rsiUp == 0 ? 0 : 100 - (100 / (1 + rsiUp / rsiDown))
+
+// ─── MACD Calculation ────────────────────────────────────────────────────────
+maFast = ta.ema(macdSourceInput, fastLenInput)
+maSlow = ta.ema(macdSourceInput, slowLenInput)
+macd   = maFast - maSlow
+signal = ta.ema(macd, sigLenInput)
+hist   = macd - signal
+
+// ─── MACD Normalization — scale relative to prior-period range (values may exceed 0-100) ───
+macdHigh   = ta.highest(macd[1],   normPeriod)
+macdLow    = ta.lowest(macd[1],    normPeriod)
+sigHigh    = ta.highest(signal[1], normPeriod)
+sigLow     = ta.lowest(signal[1],  normPeriod)
+macdNorm   = macdHigh != macdLow ? (macd   - macdLow) / (macdHigh - macdLow) * 60 + 20 : 50.0
+signalNorm = sigHigh  != sigLow  ? (signal - sigLow)  / (sigHigh  - sigLow)  * 60 + 20 : 50.0
+histAbsMax = math.max(math.abs(ta.highest(hist[1], normPeriod)), math.abs(ta.lowest(hist[1], normPeriod)))
+histNorm   = histAbsMax != 0.0 ? hist / histAbsMax * 30 + 50 : 50.0
+
+// Display lookback values — normalized, ready to plot directly (no +50 needed)
+histDispLBR = histNorm[lookbackRight]
+macdDispLBR = macdNorm[lookbackRight]
+
+// ─── MTF Potential Divergence Function (uses close/low/high from requested TF) ─
+f_potDiv(rsiLen, fast, slow, sig, lbLeft, lbRight, rngLow, rngHigh) =>
+    rsiChg  = ta.change(close)
+    rUp     = ta.rma(math.max(rsiChg, 0), rsiLen)
+    rDn     = ta.rma(-math.min(rsiChg, 0), rsiLen)
+    rsiV    = rDn == 0 ? 100 : rUp == 0 ? 0 : 100 - (100 / (1 + rUp / rDn))
+    mFast   = ta.ema(close, fast)
+    mSlow   = ta.ema(close, slow)
+    macdV   = mFast - mSlow
+    sigV    = ta.ema(macdV, sig)
+    histV   = macdV - sigV
+
+    rsiPl  = not na(ta.pivotlow(rsiV,  lbLeft, lbRight))
+    rsiPh  = not na(ta.pivothigh(rsiV, lbLeft, lbRight))
+    histPl = not na(ta.pivotlow(histV,  lbLeft, lbRight))
+    histPh = not na(ta.pivothigh(histV, lbLeft, lbRight))
+    macdPl = not na(ta.pivotlow(macdV,  lbLeft, lbRight))
+    macdPh = not na(ta.pivothigh(macdV, lbLeft, lbRight))
+
+    bsRPl = ta.barssince(rsiPl)
+    bsRPh = ta.barssince(rsiPh)
+    bsHPl = ta.barssince(histPl)
+    bsHPh = ta.barssince(histPh)
+    bsMPl = ta.barssince(macdPl)
+    bsMPh = ta.barssince(macdPh)
+
+    rV_lbr = rsiV[lbRight]
+    lo_lbr = low[lbRight]
+    hi_lbr = high[lbRight]
+    hV_lbr = histV[lbRight]
+    mV_lbr = macdV[lbRight]
+
+    rPlRsi  = ta.valuewhen(rsiPl,  rV_lbr, 0)
+    rPlLow  = ta.valuewhen(rsiPl,  lo_lbr, 0)
+    rPhRsi  = ta.valuewhen(rsiPh,  rV_lbr, 0)
+    rPhHigh = ta.valuewhen(rsiPh,  hi_lbr, 0)
+    hPlH    = ta.valuewhen(histPl, hV_lbr, 0)
+    hPlLow  = ta.valuewhen(histPl, lo_lbr, 0)
+    hPhH    = ta.valuewhen(histPh, hV_lbr, 0)
+    hPhHigh = ta.valuewhen(histPh, hi_lbr, 0)
+    mPlM    = ta.valuewhen(macdPl, mV_lbr, 0)
+    mPlLow  = ta.valuewhen(macdPl, lo_lbr, 0)
+    mPhM    = ta.valuewhen(macdPh, mV_lbr, 0)
+    mPhHigh = ta.valuewhen(macdPh, hi_lbr, 0)
+
+    rsiPotPl  = rsiV  == ta.lowest(rsiV,  lbLeft + 1)
+    rsiPotPh  = rsiV  == ta.highest(rsiV, lbLeft + 1)
+    histPotPl = histV == ta.lowest(histV, lbLeft + 1)
+    histPotPh = histV == ta.highest(histV, lbLeft + 1)
+    macdPotPl = macdV == ta.lowest(macdV, lbLeft + 1)
+    macdPotPh = macdV == ta.highest(macdV, lbLeft + 1)
+
+    rBull = rsiPotPl  and rsiV  > rPlRsi  and low < rPlLow   and bsRPl >= rngLow and bsRPl <= rngHigh
+    rBear = rsiPotPh  and rsiV  < rPhRsi  and high > rPhHigh and bsRPh >= rngLow and bsRPh <= rngHigh
+    hBull = histPotPl and histV > hPlH    and low < hPlLow   and bsHPl >= rngLow and bsHPl <= rngHigh
+    hBear = histPotPh and histV < hPhH    and high > hPhHigh and bsHPh >= rngLow and bsHPh <= rngHigh
+    mBull = macdPotPl and macdV > mPlM    and low < mPlLow   and bsMPl >= rngLow and bsMPl <= rngHigh
+    mBear = macdPotPh and macdV < mPhM    and high > mPhHigh and bsMPh >= rngLow and bsMPh <= rngHigh
+
+    // ── Confirmed divergences (pivot fully formed, compare to prior pivot) ──
+    rPlRsiPrev  = ta.valuewhen(rsiPl,  rV_lbr, 1)
+    rPlLowPrev  = ta.valuewhen(rsiPl,  lo_lbr, 1)
+    rPhRsiPrev  = ta.valuewhen(rsiPh,  rV_lbr, 1)
+    rPhHighPrev = ta.valuewhen(rsiPh,  hi_lbr, 1)
+    hPlHPrev    = ta.valuewhen(histPl, hV_lbr, 1)
+    hPlLowPrev  = ta.valuewhen(histPl, lo_lbr, 1)
+    hPhHPrev    = ta.valuewhen(histPh, hV_lbr, 1)
+    hPhHighPrev = ta.valuewhen(histPh, hi_lbr, 1)
+    mPlMPrev    = ta.valuewhen(macdPl, mV_lbr, 1)
+    mPlLowPrev  = ta.valuewhen(macdPl, lo_lbr, 1)
+    mPhMPrev    = ta.valuewhen(macdPh, mV_lbr, 1)
+    mPhHighPrev = ta.valuewhen(macdPh, hi_lbr, 1)
+
+    // Use [1] index instead of ta.barssince(x[1]) — equivalent and avoids 6 extra barssince calls
+    bsRPlP = bsRPl[1]
+    bsRPhP = bsRPh[1]
+    bsHPlP = bsHPl[1]
+    bsHPhP = bsHPh[1]
+    bsMPlP = bsMPl[1]
+    bsMPhP = bsMPh[1]
+
+    cRBull = rsiPl  and rV_lbr > rPlRsiPrev  and lo_lbr < rPlLowPrev  and bsRPlP >= rngLow and bsRPlP <= rngHigh
+    cRBear = rsiPh  and rV_lbr < rPhRsiPrev  and hi_lbr > rPhHighPrev and bsRPhP >= rngLow and bsRPhP <= rngHigh
+    cHBull = histPl and hV_lbr > hPlHPrev    and lo_lbr < hPlLowPrev  and bsHPlP >= rngLow and bsHPlP <= rngHigh
+    cHBear = histPh and hV_lbr < hPhHPrev    and hi_lbr > hPhHighPrev and bsHPhP >= rngLow and bsHPhP <= rngHigh
+    cMBull = macdPl and mV_lbr > mPlMPrev    and lo_lbr < mPlLowPrev  and bsMPlP >= rngLow and bsMPlP <= rngHigh
+    cMBear = macdPh and mV_lbr < mPhMPrev    and hi_lbr > mPhHighPrev and bsMPhP >= rngLow and bsMPhP <= rngHigh
+
+    // barssince confirmed — na until first occurrence; used for "N bars ago" display
+    cbsRBull = ta.barssince(cRBull)
+    cbsRBear = ta.barssince(cRBear)
+    cbsHBull = ta.barssince(cHBull)
+    cbsHBear = ta.barssince(cHBear)
+    cbsMBull = ta.barssince(cMBull)
+    cbsMBear = ta.barssince(cMBear)
+
+    [rBull, rBear, hBull, hBear, mBull, mBear, cbsRBull, cbsRBear, cbsHBull, cbsHBear, cbsMBull, cbsMBear]
+
+// ─── RSI Divergence Detection ────────────────────────────────────────────────
+rsiLBR  = rsi[lookbackRight]
+lowLBR  = low[lookbackRight]
+highLBR = high[lookbackRight]
+
+rsiPlFound = not na(ta.pivotlow(rsi,  lookbackLeft, lookbackRight))
+rsiPhFound = not na(ta.pivothigh(rsi, lookbackLeft, lookbackRight))
+// barssince computed once here — reused for both confirmed div range check and potential div
+bsRsiPl = ta.barssince(rsiPlFound)
+bsRsiPh = ta.barssince(rsiPhFound)
+
+// RSI Bullish: price lower low + RSI higher low
+rsiHL      = rsiLBR > ta.valuewhen(rsiPlFound, rsiLBR, 1) and (rangeLower <= bsRsiPl[1] and bsRsiPl[1] <= rangeUpper)
+rsiPriceLL = lowLBR  < ta.valuewhen(rsiPlFound, lowLBR,  1)
+rsiBull    = rsiPriceLL and rsiHL  and rsiPlFound
+
+// RSI Bearish: price higher high + RSI lower high
+rsiLH      = rsiLBR < ta.valuewhen(rsiPhFound, rsiLBR, 1) and (rangeLower <= bsRsiPh[1] and bsRsiPh[1] <= rangeUpper)
+rsiPriceHH = highLBR > ta.valuewhen(rsiPhFound, highLBR, 1)
+rsiBear    = rsiPriceHH and rsiLH and rsiPhFound
+
+// ─── MACD Histogram Divergence Detection ─────────────────────────────────────
+histLBR = hist[lookbackRight]
+
+macdPlFound = not na(ta.pivotlow(hist,  lookbackLeft, lookbackRight))
+macdPhFound = not na(ta.pivothigh(hist, lookbackLeft, lookbackRight))
+bsMacdPl    = ta.barssince(macdPlFound)
+bsMacdPh    = ta.barssince(macdPhFound)
+
+// MACD Bullish: price lower low + histogram higher low
+macdHL      = histLBR > ta.valuewhen(macdPlFound, histLBR, 1) and (rangeLower <= bsMacdPl[1] and bsMacdPl[1] <= rangeUpper)
+macdPriceLL = lowLBR  < ta.valuewhen(macdPlFound, lowLBR,  1)
+macdBull    = macdPriceLL and macdHL and macdPlFound
+
+// MACD Bearish: price higher high + histogram lower high
+macdLH      = histLBR < ta.valuewhen(macdPhFound, histLBR, 1) and (rangeLower <= bsMacdPh[1] and bsMacdPh[1] <= rangeUpper)
+macdPriceHH = highLBR > ta.valuewhen(macdPhFound, highLBR, 1)
+macdBear    = macdPriceHH and macdLH and macdPhFound
+
+// ─── MACD Line Divergence Detection ─────────────────────────────────────────
+macdLineLBR = macd[lookbackRight]
+
+macdLinePlFound = not na(ta.pivotlow(macd,  lookbackLeft, lookbackRight))
+macdLinePhFound = not na(ta.pivothigh(macd, lookbackLeft, lookbackRight))
+bsMacdLinePl    = ta.barssince(macdLinePlFound)
+bsMacdLinePh    = ta.barssince(macdLinePhFound)
+
+// MACD Line Bullish: price lower low + MACD line higher low
+macdLineHL      = macdLineLBR > ta.valuewhen(macdLinePlFound, macdLineLBR, 1) and (rangeLower <= bsMacdLinePl[1] and bsMacdLinePl[1] <= rangeUpper)
+macdLinePriceLL = lowLBR < ta.valuewhen(macdLinePlFound, lowLBR, 1)
+macdLineBull    = macdLinePriceLL and macdLineHL and macdLinePlFound
+
+// MACD Line Bearish: price higher high + MACD line lower high
+macdLineLH      = macdLineLBR < ta.valuewhen(macdLinePhFound, macdLineLBR, 1) and (rangeLower <= bsMacdLinePh[1] and bsMacdLinePh[1] <= rangeUpper)
+macdLinePriceHH = highLBR > ta.valuewhen(macdLinePhFound, highLBR, 1)
+macdLineBear    = macdLinePriceHH and macdLineLH and macdLinePhFound
+
+// ─── Potential Divergence Detection (no right-lookback confirmation, repaints) ───────────────────
+// A potential pivot fires when the current bar is the lowest/highest over the past lookbackLeft bars
+// barssince series already computed above — reused here (zero extra ta.barssince calls)
+
+// Most-recent confirmed pivot values (occurrence 0)
+rsiLastPlRsi   = ta.valuewhen(rsiPlFound, rsiLBR,        0)
+rsiLastPlLow   = ta.valuewhen(rsiPlFound, lowLBR,         0)
+rsiLastPhRsi   = ta.valuewhen(rsiPhFound, rsiLBR,        0)
+rsiLastPhHigh  = ta.valuewhen(rsiPhFound, highLBR,        0)
+histLastPlHist = ta.valuewhen(macdPlFound, histLBR,       0)
+histLastPlLow  = ta.valuewhen(macdPlFound, lowLBR,        0)
+histLastPhHist = ta.valuewhen(macdPhFound, histLBR,       0)
+histLastPhHigh = ta.valuewhen(macdPhFound, highLBR,       0)
+macdLastPlMacd = ta.valuewhen(macdLinePlFound, macdLineLBR, 0)
+macdLastPlLow  = ta.valuewhen(macdLinePlFound, lowLBR,    0)
+macdLastPhMacd = ta.valuewhen(macdLinePhFound, macdLineLBR, 0)
+macdLastPhHigh = ta.valuewhen(macdLinePhFound, highLBR,   0)
+
+// Start XY of each potential div line (left/older end = most recent confirmed pivot bar)
+rsiPotBullX1      = int(ta.valuewhen(rsiPlFound,      bar_index, 0)) - lookbackRight
+rsiPotBullY1      = ta.valuewhen(rsiPlFound,      rsiLBR,       0)
+rsiPotBearX1      = int(ta.valuewhen(rsiPhFound,      bar_index, 0)) - lookbackRight
+rsiPotBearY1      = ta.valuewhen(rsiPhFound,      rsiLBR,       0)
+histPotBullX1     = int(ta.valuewhen(macdPlFound,     bar_index, 0)) - lookbackRight
+histPotBullY1     = ta.valuewhen(macdPlFound,     histDispLBR,  0)
+histPotBearX1     = int(ta.valuewhen(macdPhFound,     bar_index, 0)) - lookbackRight
+histPotBearY1     = ta.valuewhen(macdPhFound,     histDispLBR,  0)
+macdLinePotBullX1 = int(ta.valuewhen(macdLinePlFound, bar_index, 0)) - lookbackRight
+macdLinePotBullY1 = ta.valuewhen(macdLinePlFound, macdDispLBR,  0)
+macdLinePotBearX1 = int(ta.valuewhen(macdLinePhFound, bar_index, 0)) - lookbackRight
+macdLinePotBearY1 = ta.valuewhen(macdLinePhFound, macdDispLBR,  0)
+
+// Potential pivot: current is local low/high over lookbackLeft bars (no right-bar wait)
+rsiPotPl   = rsi  == ta.lowest(rsi,  lookbackLeft + 1)
+rsiPotPh   = rsi  == ta.highest(rsi, lookbackLeft + 1)
+histPotPl  = hist == ta.lowest(hist, lookbackLeft + 1)
+histPotPh  = hist == ta.highest(hist, lookbackLeft + 1)
+macdPotPl  = macd == ta.lowest(macd, lookbackLeft + 1)
+macdPotPh  = macd == ta.highest(macd, lookbackLeft + 1)
+
+// Potential divergence conditions
+rsiPotBull      = rsiPotPl  and rsi  > rsiLastPlRsi   and low  < rsiLastPlLow   and bsRsiPl      >= rangeLower and bsRsiPl      <= rangeUpper
+rsiPotBear      = rsiPotPh  and rsi  < rsiLastPhRsi   and high > rsiLastPhHigh  and bsRsiPh      >= rangeLower and bsRsiPh      <= rangeUpper
+histPotBull     = histPotPl and hist > histLastPlHist  and low  < histLastPlLow  and bsMacdPl     >= rangeLower and bsMacdPl     <= rangeUpper
+histPotBear     = histPotPh and hist < histLastPhHist  and high > histLastPhHigh and bsMacdPh     >= rangeLower and bsMacdPh     <= rangeUpper
+macdLinePotBull = macdPotPl and macd > macdLastPlMacd  and low  < macdLastPlLow  and bsMacdLinePl >= rangeLower and bsMacdLinePl <= rangeUpper
+macdLinePotBear = macdPotPh and macd < macdLastPhMacd  and high > macdLastPhHigh and bsMacdLinePh >= rangeLower and bsMacdLinePh <= rangeUpper
+
+// ─── Divergence Background Highlight ────────────────────────────────────────
+noneColor    = color.new(color.white, 100)
+rsiBullColor = color.new(#fbc02d, 50)   // yellow – RSI bullish
+rsiBearColor = color.new(#fbc02d, 50)   // yellow – RSI bearish
+macdBullColor     = color.new(#ab47bc, 50)  // purple – MACD histogram bullish
+macdBearColor     = color.new(#ab47bc, 50)  // purple – MACD histogram bearish
+macdLineBullColor = color.new(#26c6da, 50)  // cyan   – MACD line bullish
+macdLineBearColor = color.new(#26c6da, 50)  // cyan   – MACD line bearish
+
+// ─── Plot order: Signal (back) → Histogram → MACD line → RSI (front/top) ────
+
+// RSI hlines (always behind plots)
+rsiUpperBand = hline(obLevel, "Overbought", color=color.new(#787B86, 80), linestyle=hline.style_dashed)
+rsiLowerBand = hline(osLevel, "Oversold",   color=color.new(#787B86, 80), linestyle=hline.style_dashed)
+fill(rsiUpperBand, rsiLowerBand, color=color.rgb(126, 87, 194, 95), title="RSI Background Fill")
+
+// Signal line — back (hidden by default, toggle in Style settings)
+plot(signalNorm, "Signal Line", color=color.new(color.orange, 0), linewidth=1, display=display.none)
+
+// Histogram fills — fill-based, centered on 50 (histNorm: hist=0 → 50)
+histPosCl    = hist > hist[1] ? color.new(#26a69a, 80) : color.new(#b2dfdb, 80)
+histNegCl    = hist > hist[1] ? color.new(#ffcdd2, 80) : color.new(#ff5252, 80)
+histNormPos  = hist >= 0 ? histNorm : 50.0
+histNormNeg  = hist <  0 ? histNorm : 50.0
+histPosPlot  = plot(histNormPos, "Hist+",     color=na, display=display.none)
+histNegPlot  = plot(histNormNeg, "Hist-",     color=na, display=display.none)
+histBasePlot = plot(50,          "Hist Base", color=na, display=display.none, editable=false)
+fill(histPosPlot, histBasePlot, color=histPosCl, title="Histogram Positive Fill")
+fill(histNegPlot, histBasePlot, color=histNegCl, title="Histogram Negative Fill")
+
+// MACD line — middle
+plot(macdNorm, "MACD", color=#26c6da)
+
+// RSI line
+plot(rsi, "RSI", color=#fbc02d)
+
+// ─── RSI Divergence Plots ────────────────────────────────────────────────────
+plot(
+     rsiPlFound ? rsiLBR : na,
+     offset    = -lookbackRight,
+     title     = "RSI Bullish Divergence Line",
+     color     = rsiBull ? rsiBullColor : noneColor,
+     display   = display.pane)
+
+plotshape(
+     rsiBull ? rsiLBR : na,
+     offset    = -lookbackRight,
+     title     = "RSI Bull Triangle",
+     style     = shape.triangleup,
+     location  = location.absolute,
+     color     = rsiBullColor,
+     size      = size.small,
+     display   = display.pane)
+
+plotshape(
+     rsiBull and showDivLabels ? rsiLBR : na,
+     offset    = -lookbackRight,
+     title     = "RSI Bullish Label",
+     text      = " RSI Bull ",
+     style     = shape.labelup,
+     location  = location.absolute,
+     color     = rsiBullColor,
+     textcolor = color.white,
+     size      = size.small,
+     display   = display.pane)
+
+plot(
+     rsiPhFound ? rsiLBR : na,
+     offset    = -lookbackRight,
+     title     = "RSI Bearish Divergence Line",
+     color     = rsiBear ? rsiBearColor : noneColor,
+     display   = display.pane)
+
+plotshape(
+     rsiBear ? rsiLBR : na,
+     offset    = -lookbackRight,
+     title     = "RSI Bear Triangle",
+     style     = shape.triangledown,
+     location  = location.absolute,
+     color     = rsiBearColor,
+     size      = size.small,
+     display   = display.pane)
+
+plotshape(
+     rsiBear and showDivLabels ? rsiLBR : na,
+     offset    = -lookbackRight,
+     title     = "RSI Bearish Label",
+     text      = " RSI Bear ",
+     style     = shape.labeldown,
+     location  = location.absolute,
+     color     = rsiBearColor,
+     textcolor = color.white,
+     size      = size.small,
+     display   = display.pane)
+
+// ─── MACD Divergence Plots ───────────────────────────────────────────────────
+plot(
+     macdPlFound ? histDispLBR : na,
+     offset    = -lookbackRight,
+     title     = "MACD Bullish Divergence Line",
+     color     = macdBull ? macdBullColor : noneColor,
+     display   = display.pane)
+
+plotshape(
+     macdBull ? histDispLBR : na,
+     offset    = -lookbackRight,
+     title     = "MACD Hist Bull Triangle",
+     style     = shape.triangleup,
+     location  = location.absolute,
+     color     = macdBullColor,
+     size      = size.small,
+     display   = display.pane)
+
+plotshape(
+     macdBull and showDivLabels ? histDispLBR : na,
+     offset    = -lookbackRight,
+     title     = "MACD Bullish Label",
+     text      = " MACD Bull ",
+     style     = shape.labelup,
+     location  = location.absolute,
+     color     = macdBullColor,
+     textcolor = color.white,
+     size      = size.small,
+     display   = display.pane)
+
+plot(
+     macdPhFound ? histDispLBR : na,
+     offset    = -lookbackRight,
+     title     = "MACD Bearish Divergence Line",
+     color     = macdBear ? macdBearColor : noneColor,
+     display   = display.pane)
+
+plotshape(
+     macdBear ? histDispLBR : na,
+     offset    = -lookbackRight,
+     title     = "MACD Hist Bear Triangle",
+     style     = shape.triangledown,
+     location  = location.absolute,
+     color     = macdBearColor,
+     size      = size.small,
+     display   = display.pane)
+
+plotshape(
+     macdBear and showDivLabels ? histDispLBR : na,
+     offset    = -lookbackRight,
+     title     = "MACD Bearish Label",
+     text      = " MACD Bear ",
+     style     = shape.labeldown,
+     location  = location.absolute,
+     color     = macdBearColor,
+     textcolor = color.white,
+     size      = size.small,
+     display   = display.pane)
+
+// ─── MACD Line Divergence Plots ─────────────────────────────────────────────
+plot(
+     macdLinePlFound ? macdDispLBR : na,
+     offset    = -lookbackRight,
+     title     = "MACD Line Bullish Divergence",
+     color     = macdLineBull ? macdLineBullColor : noneColor,
+     display   = display.pane)
+
+plotshape(
+     macdLineBull ? macdDispLBR : na,
+     offset    = -lookbackRight,
+     title     = "MACD Line Bull Triangle",
+     style     = shape.triangleup,
+     location  = location.absolute,
+     color     = macdLineBullColor,
+     size      = size.small,
+     display   = display.pane)
+
+plotshape(
+     macdLineBull and showDivLabels ? macdDispLBR : na,
+     offset    = -lookbackRight,
+     title     = "MACD Line Bullish Label",
+     text      = " MACD-L Bull ",
+     style     = shape.labelup,
+     location  = location.absolute,
+     color     = macdLineBullColor,
+     textcolor = color.white,
+     size      = size.small,
+     display   = display.pane)
+
+plot(
+     macdLinePhFound ? macdDispLBR : na,
+     offset    = -lookbackRight,
+     title     = "MACD Line Bearish Divergence",
+     color     = macdLineBear ? macdLineBearColor : noneColor,
+     display   = display.pane)
+
+plotshape(
+     macdLineBear ? macdDispLBR : na,
+     offset    = -lookbackRight,
+     title     = "MACD Line Bear Triangle",
+     style     = shape.triangledown,
+     location  = location.absolute,
+     color     = macdLineBearColor,
+     size      = size.small,
+     display   = display.pane)
+
+plotshape(
+     macdLineBear and showDivLabels ? macdDispLBR : na,
+     offset    = -lookbackRight,
+     title     = "MACD Line Bearish Label",
+     text      = " MACD-L Bear ",
+     style     = shape.labeldown,
+     location  = location.absolute,
+     color     = macdLineBearColor,
+     textcolor = color.white,
+     size      = size.small,
+     display   = display.pane)
+
+// ─── Potential Divergence Lines (dashed, linewidth=2, same color as confirmed) ──────────────────
+var line rsiPotBullLine     = na
+var line rsiPotBearLine     = na
+var line histPotBullLine    = na
+var line histPotBearLine    = na
+var line macdLinePotBullLine = na
+var line macdLinePotBearLine = na
+
+if rsiPotBull
+    if na(rsiPotBullLine)
+        rsiPotBullLine := line.new(rsiPotBullX1, rsiPotBullY1, bar_index, rsi, color=rsiBullColor, style=line.style_dashed, width=2)
+    else
+        line.set_xy1(rsiPotBullLine, rsiPotBullX1, rsiPotBullY1)
+        line.set_xy2(rsiPotBullLine, bar_index, rsi)
+else if not na(rsiPotBullLine)
+    line.delete(rsiPotBullLine)
+    rsiPotBullLine := na
+
+if rsiPotBear
+    if na(rsiPotBearLine)
+        rsiPotBearLine := line.new(rsiPotBearX1, rsiPotBearY1, bar_index, rsi, color=rsiBearColor, style=line.style_dashed, width=2)
+    else
+        line.set_xy1(rsiPotBearLine, rsiPotBearX1, rsiPotBearY1)
+        line.set_xy2(rsiPotBearLine, bar_index, rsi)
+else if not na(rsiPotBearLine)
+    line.delete(rsiPotBearLine)
+    rsiPotBearLine := na
+
+if histPotBull
+    if na(histPotBullLine)
+        histPotBullLine := line.new(histPotBullX1, histPotBullY1, bar_index, histNorm, color=macdBullColor, style=line.style_dashed, width=2)
+    else
+        line.set_xy1(histPotBullLine, histPotBullX1, histPotBullY1)
+        line.set_xy2(histPotBullLine, bar_index, histNorm)
+else if not na(histPotBullLine)
+    line.delete(histPotBullLine)
+    histPotBullLine := na
+
+if histPotBear
+    if na(histPotBearLine)
+        histPotBearLine := line.new(histPotBearX1, histPotBearY1, bar_index, histNorm, color=macdBearColor, style=line.style_dashed, width=2)
+    else
+        line.set_xy1(histPotBearLine, histPotBearX1, histPotBearY1)
+        line.set_xy2(histPotBearLine, bar_index, histNorm)
+else if not na(histPotBearLine)
+    line.delete(histPotBearLine)
+    histPotBearLine := na
+
+if macdLinePotBull
+    if na(macdLinePotBullLine)
+        macdLinePotBullLine := line.new(macdLinePotBullX1, macdLinePotBullY1, bar_index, macdNorm, color=macdLineBullColor, style=line.style_dashed, width=2)
+    else
+        line.set_xy1(macdLinePotBullLine, macdLinePotBullX1, macdLinePotBullY1)
+        line.set_xy2(macdLinePotBullLine, bar_index, macdNorm)
+else if not na(macdLinePotBullLine)
+    line.delete(macdLinePotBullLine)
+    macdLinePotBullLine := na
+
+if macdLinePotBear
+    if na(macdLinePotBearLine)
+        macdLinePotBearLine := line.new(macdLinePotBearX1, macdLinePotBearY1, bar_index, macdNorm, color=macdLineBearColor, style=line.style_dashed, width=2)
+    else
+        line.set_xy1(macdLinePotBearLine, macdLinePotBearX1, macdLinePotBearY1)
+        line.set_xy2(macdLinePotBearLine, bar_index, macdNorm)
+else if not na(macdLinePotBearLine)
+    line.delete(macdLinePotBearLine)
+    macdLinePotBearLine := na
+
+// ─── MACD × Signal Crossover Background ─────────────────────────────────────
+macdCrossUp   = ta.crossover(macd,  signal)
+macdCrossDown = ta.crossunder(macd, signal)
+bgcolor(macdCrossUp   ? color.new(color.green, 90) : na, title="MACD Cross Up BG")
+bgcolor(macdCrossDown ? color.new(color.red,   90) : na, title="MACD Cross Down BG")
+
+// ─── MTF Potential Divergence — Security Calls ───────────────────────────────
+[r1m_rb,  r1m_rB,  r1m_hb,  r1m_hB,  r1m_mb,  r1m_mB,  r1m_crb, r1m_crB, r1m_chb, r1m_chB, r1m_cmb, r1m_cmB]  =
+     request.security(syminfo.tickerid, "1",   f_potDiv(rsiLengthInput, fastLenInput, slowLenInput, sigLenInput, lookbackLeft, lookbackRight, rangeLower, rangeUpper))
+[r5m_rb,  r5m_rB,  r5m_hb,  r5m_hB,  r5m_mb,  r5m_mB,  r5m_crb, r5m_crB, r5m_chb, r5m_chB, r5m_cmb, r5m_cmB]  =
+     request.security(syminfo.tickerid, "5",   f_potDiv(rsiLengthInput, fastLenInput, slowLenInput, sigLenInput, lookbackLeft, lookbackRight, rangeLower, rangeUpper))
+[r15m_rb, r15m_rB, r15m_hb, r15m_hB, r15m_mb, r15m_mB, r15m_crb, r15m_crB, r15m_chb, r15m_chB, r15m_cmb, r15m_cmB] =
+     request.security(syminfo.tickerid, "15",  f_potDiv(rsiLengthInput, fastLenInput, slowLenInput, sigLenInput, lookbackLeft, lookbackRight, rangeLower, rangeUpper))
+[r1h_rb,  r1h_rB,  r1h_hb,  r1h_hB,  r1h_mb,  r1h_mB,  r1h_crb, r1h_crB, r1h_chb, r1h_chB, r1h_cmb, r1h_cmB]  =
+     request.security(syminfo.tickerid, "60",  f_potDiv(rsiLengthInput, fastLenInput, slowLenInput, sigLenInput, lookbackLeft, lookbackRight, rangeLower, rangeUpper))
+[r4h_rb,  r4h_rB,  r4h_hb,  r4h_hB,  r4h_mb,  r4h_mB,  r4h_crb, r4h_crB, r4h_chb, r4h_chB, r4h_cmb, r4h_cmB]  =
+     request.security(syminfo.tickerid, "240", f_potDiv(rsiLengthInput, fastLenInput, slowLenInput, sigLenInput, lookbackLeft, lookbackRight, rangeLower, rangeUpper))
+
+// ─── MTF Table — feed style, only active signals ─────────────────────────────
+mtfHdrBg  = color.new(#1e222d, 0)
+mtfTfBg   = color.new(#1e222d, 0)
+mtfBullBg = color.new(#089981, 10)
+mtfBearBg = color.new(#f23645, 10)
+mtfBothBg = color.new(#FF7F00, 10)
+mtfTxtCl  = color.white
+mtfHdrCl  = color.white
+
+// Helper: build confirmed-div string sorted descending by barssince (oldest first)
+f_confStr(crb, crB, chb, chB, cmb, cmB) =>
+    lbls    = array.new_string()
+    vals    = array.new_int()
+    hasBull = false
+    hasBear = false
+    if not na(crb) and crb <= rangeUpper
+        array.push(lbls, "R▲")
+        array.push(vals, int(crb))
+        hasBull := true
+    if not na(crB) and crB <= rangeUpper
+        array.push(lbls, "R▼")
+        array.push(vals, int(crB))
+        hasBear := true
+    if not na(chb) and chb <= rangeUpper
+        array.push(lbls, "H▲")
+        array.push(vals, int(chb))
+        hasBull := true
+    if not na(chB) and chB <= rangeUpper
+        array.push(lbls, "H▼")
+        array.push(vals, int(chB))
+        hasBear := true
+    if not na(cmb) and cmb <= rangeUpper
+        array.push(lbls, "M▲")
+        array.push(vals, int(cmb))
+        hasBull := true
+    if not na(cmB) and cmB <= rangeUpper
+        array.push(lbls, "M▼")
+        array.push(vals, int(cmB))
+        hasBear := true
+    // Bubble-sort descending by barssince (at most 6 entries)
+    n = array.size(vals)
+    if n > 1
+        for i = 0 to n - 2
+            for j = 0 to n - 2 - i
+                if array.get(vals, j) < array.get(vals, j + 1)
+                    vj  = array.get(vals, j)
+                    vj1 = array.get(vals, j + 1)
+                    lj  = array.get(lbls, j)
+                    lj1 = array.get(lbls, j + 1)
+                    array.set(vals, j,     vj1)
+                    array.set(vals, j + 1, vj)
+                    array.set(lbls, j,     lj1)
+                    array.set(lbls, j + 1, lj)
+    cs = ""
+    if n > 0
+        for i = 0 to n - 1
+            cs := cs + array.get(lbls, i) + str.tostring(array.get(vals, i)) + " "
+    bg = hasBull and hasBear ? mtfBothBg : hasBull ? mtfBullBg : hasBear ? mtfBearBg : color.new(#1e222d, 0)
+    [cs, bg]
+
+var table mtfTable = na
+
+if barstate.islast
+    tblPos_val = switch tablePos
+        "top_right"     => position.top_right
+        "bottom_left"   => position.bottom_left
+        "bottom_right"  => position.bottom_right
+        "top_center"    => position.top_center
+        "bottom_center" => position.bottom_center
+        =>               position.top_left
+
+    // Collect only TFs with at least one active signal
+    activeLabels = array.new_string()
+    activeSigs   = array.new_string()
+    activeBgs    = array.new_color()
+    activeConf   = array.new_string()
+    activeConfBgs = array.new_color()
+
+    if show1m
+        s = (r1m_rb ? "R▲ " : "") + (r1m_rB ? "R▼ " : "") + (r1m_hb ? "H▲ " : "") + (r1m_hB ? "H▼ " : "") + (r1m_mb ? "M▲ " : "") + (r1m_mB ? "M▼ " : "")
+        [cs, cbg] = f_confStr(r1m_crb, r1m_crB, r1m_chb, r1m_chB, r1m_cmb, r1m_cmB)
+        if str.length(s) > 0 or str.length(cs) > 0
+            array.push(activeLabels, "1m")
+            array.push(activeSigs,   str.length(s)  > 0 ? s  : "—")
+            array.push(activeBgs,    str.length(s)  > 0 ? ((r1m_rb or r1m_hb or r1m_mb) and (r1m_rB or r1m_hB or r1m_mB) ? mtfBothBg : (r1m_rb or r1m_hb or r1m_mb) ? mtfBullBg : mtfBearBg) : mtfHdrBg)
+            array.push(activeConf,   str.length(cs) > 0 ? cs : "—")
+            array.push(activeConfBgs, cbg)
+    if show5m
+        s = (r5m_rb ? "R▲ " : "") + (r5m_rB ? "R▼ " : "") + (r5m_hb ? "H▲ " : "") + (r5m_hB ? "H▼ " : "") + (r5m_mb ? "M▲ " : "") + (r5m_mB ? "M▼ " : "")
+        [cs, cbg] = f_confStr(r5m_crb, r5m_crB, r5m_chb, r5m_chB, r5m_cmb, r5m_cmB)
+        if str.length(s) > 0 or str.length(cs) > 0
+            array.push(activeLabels, "5m")
+            array.push(activeSigs,   str.length(s)  > 0 ? s  : "—")
+            array.push(activeBgs,    str.length(s)  > 0 ? ((r5m_rb or r5m_hb or r5m_mb) and (r5m_rB or r5m_hB or r5m_mB) ? mtfBothBg : (r5m_rb or r5m_hb or r5m_mb) ? mtfBullBg : mtfBearBg) : mtfHdrBg)
+            array.push(activeConf,   str.length(cs) > 0 ? cs : "—")
+            array.push(activeConfBgs, cbg)
+    if show15m
+        s = (r15m_rb ? "R▲ " : "") + (r15m_rB ? "R▼ " : "") + (r15m_hb ? "H▲ " : "") + (r15m_hB ? "H▼ " : "") + (r15m_mb ? "M▲ " : "") + (r15m_mB ? "M▼ " : "")
+        [cs, cbg] = f_confStr(r15m_crb, r15m_crB, r15m_chb, r15m_chB, r15m_cmb, r15m_cmB)
+        if str.length(s) > 0 or str.length(cs) > 0
+            array.push(activeLabels, "15m")
+            array.push(activeSigs,   str.length(s)  > 0 ? s  : "—")
+            array.push(activeBgs,    str.length(s)  > 0 ? ((r15m_rb or r15m_hb or r15m_mb) and (r15m_rB or r15m_hB or r15m_mB) ? mtfBothBg : (r15m_rb or r15m_hb or r15m_mb) ? mtfBullBg : mtfBearBg) : mtfHdrBg)
+            array.push(activeConf,   str.length(cs) > 0 ? cs : "—")
+            array.push(activeConfBgs, cbg)
+    if show1h
+        s = (r1h_rb ? "R▲ " : "") + (r1h_rB ? "R▼ " : "") + (r1h_hb ? "H▲ " : "") + (r1h_hB ? "H▼ " : "") + (r1h_mb ? "M▲ " : "") + (r1h_mB ? "M▼ " : "")
+        [cs, cbg] = f_confStr(r1h_crb, r1h_crB, r1h_chb, r1h_chB, r1h_cmb, r1h_cmB)
+        if str.length(s) > 0 or str.length(cs) > 0
+            array.push(activeLabels, "1h")
+            array.push(activeSigs,   str.length(s)  > 0 ? s  : "—")
+            array.push(activeBgs,    str.length(s)  > 0 ? ((r1h_rb or r1h_hb or r1h_mb) and (r1h_rB or r1h_hB or r1h_mB) ? mtfBothBg : (r1h_rb or r1h_hb or r1h_mb) ? mtfBullBg : mtfBearBg) : mtfHdrBg)
+            array.push(activeConf,   str.length(cs) > 0 ? cs : "—")
+            array.push(activeConfBgs, cbg)
+    if show4h
+        s = (r4h_rb ? "R▲ " : "") + (r4h_rB ? "R▼ " : "") + (r4h_hb ? "H▲ " : "") + (r4h_hB ? "H▼ " : "") + (r4h_mb ? "M▲ " : "") + (r4h_mB ? "M▼ " : "")
+        [cs, cbg] = f_confStr(r4h_crb, r4h_crB, r4h_chb, r4h_chB, r4h_cmb, r4h_cmB)
+        if str.length(s) > 0 or str.length(cs) > 0
+            array.push(activeLabels, "4h")
+            array.push(activeSigs,   str.length(s)  > 0 ? s  : "—")
+            array.push(activeBgs,    str.length(s)  > 0 ? ((r4h_rb or r4h_hb or r4h_mb) and (r4h_rB or r4h_hB or r4h_mB) ? mtfBothBg : (r4h_rb or r4h_hb or r4h_mb) ? mtfBullBg : mtfBearBg) : mtfHdrBg)
+            array.push(activeConf,   str.length(cs) > 0 ? cs : "—")
+            array.push(activeConfBgs, cbg)
+
+    // Rebuild table only when needed
+    if not na(mtfTable)
+        table.delete(mtfTable)
+        mtfTable := na
+
+    nActive = array.size(activeLabels)
+    if nActive > 0
+        mtfTable := table.new(tblPos_val, 3, nActive + 1,
+             bgcolor      = color.new(#1e222d, 0),
+             border_width = 1,
+             border_color = color.new(color.gray, 70))
+        table.cell(mtfTable, 0, 0, "TF",         bgcolor=mtfHdrBg, text_color=mtfHdrCl, text_size=size.small)
+        table.cell(mtfTable, 1, 0, "Potential",  bgcolor=mtfHdrBg, text_color=mtfHdrCl, text_size=size.small)
+        table.cell(mtfTable, 2, 0, "Confirmed",  bgcolor=mtfHdrBg, text_color=mtfHdrCl, text_size=size.small)
+        for i = 0 to nActive - 1
+            table.cell(mtfTable, 0, i + 1, array.get(activeLabels,  i), bgcolor=mtfTfBg,                      text_color=mtfTxtCl, text_size=size.small)
+            table.cell(mtfTable, 1, i + 1, array.get(activeSigs,    i), bgcolor=array.get(activeBgs,    i),    text_color=mtfTxtCl, text_size=size.small)
+            table.cell(mtfTable, 2, i + 1, array.get(activeConf,    i), bgcolor=array.get(activeConfBgs, i),   text_color=mtfTxtCl, text_size=size.small)
+
+// ─── Alerts ──────────────────────────────────────────────────────────────────
+alertcondition(rsiBull,       "RSI Bullish Divergence",       "RSI: Bullish Divergence detected")
+alertcondition(rsiBear,       "RSI Bearish Divergence",       "RSI: Bearish Divergence detected")
+alertcondition(macdBull,      "MACD Hist Bullish Divergence", "MACD Histogram: Bullish Divergence detected")
+alertcondition(macdBear,      "MACD Hist Bearish Divergence", "MACD Histogram: Bearish Divergence detected")
+alertcondition(macdLineBull,  "MACD Line Bullish Divergence", "MACD Line: Bullish Divergence detected")
+alertcondition(macdLineBear,  "MACD Line Bearish Divergence", "MACD Line: Bearish Divergence detected")
+alertcondition(rsiBull  or macdBull  or macdLineBull, "Any Bullish Divergence", "Bullish Divergence detected (RSI, MACD Hist, or MACD Line)")
+alertcondition(rsiBear  or macdBear  or macdLineBear, "Any Bearish Divergence", "Bearish Divergence detected (RSI, MACD Hist, or MACD Line)")

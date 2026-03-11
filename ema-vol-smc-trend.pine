@@ -1,0 +1,678 @@
+//@version=6
+indicator("EMA, Vol, SMC, Trend Table", overlay=true, max_lines_count=500, max_labels_count=500, max_bars_back=5000)
+
+// MA Settings
+matype = input.string(defval = "EMA", title = "MA Type", options = ["EMA", "SMA"], group="MA Settings")
+
+// Volume Settings
+volMaLength = input.int(30, title="Volume MA Length", minval=1, group="Volume Settings")
+volMultiplier1 = input.float(1.5, title="Volume Multiplier 1", minval=1, group="Volume Settings")
+volMultiplier2 = input.float(2, title="Volume Multiplier 2", minval=1, group="Volume Settings")
+
+// MA
+ma20 = matype == "EMA" ? ta.ema(close, 20) : ta.sma(close, 20)
+ma50 = matype == "EMA" ? ta.ema(close, 50) : ta.sma(close, 50)
+ma100 = matype == "EMA" ? ta.ema(close, 100) : ta.sma(close, 100)
+ma200 = matype == "EMA" ? ta.ema(close, 200) : ta.sma(close, 200)
+ma20Plot = plot(ma20, title="MA 20", color = color.new(#4caf50, 70))
+ma50Plot = plot(ma50, title="MA 50", color = color.new(#ffeb3b, 70))
+ma100Plot = plot(ma100, title="MA 100", color = color.new(#f44336, 70))
+ma200Plot = plot(ma200, title="MA 200", color = color.new(#9c27b0, 70))
+
+// Vol
+var color volBullishBase = #4caf50
+var color volBearishBase = #f44336
+var color volBullishHigh = #a5d6a7
+var color volBearishHigh = #ef9a9a
+
+volMa = ta.ema(volume, volMaLength)
+hasLargeVol1 = volume > volMultiplier1 * volMa
+hasLargeVol2 = volume > volMultiplier2 * volMa
+barcolor(hasLargeVol1 ? (close > open ? (hasLargeVol2 ? volBullishHigh : volBullishBase) : (hasLargeVol2 ? volBearishHigh : volBearishBase)) : na, title="Volume Bar Color")
+
+
+// *****************************************************************************
+// *** SMC
+// *****************************************************************************
+
+//-----------------------------------------------------------------------------{
+//Constants
+//-----------------------------------------------------------------------------{
+color TRANSP_CSS = #ffffff00
+
+//Tooltips
+string MODE_TOOLTIP      = 'Allows to display historical Structure or only the recent ones'
+string STYLE_TOOLTIP     = 'Indicator color theme'
+string SHOW_INTERNAL     = 'Display internal market structure'
+string CONFLUENCE_FILTER = 'Filter non significant internal structure breakouts'
+string SHOW_SWING        = 'Display swing market Structure'
+string SHOW_SWING_POINTS = 'Display swing point as labels on the chart'
+string SHOW_SWHL_POINTS  = 'Highlight most recent strong and weak high/low points on the chart'
+string SHOW_FVG          = 'Display fair values gaps on the chart'
+string AUTO_FVG          = 'Filter out non significant fair value gaps'
+string FVG_TF            = 'Fair value gaps timeframe'
+string EXTEND_FVG        = 'Determine how many bars to extend the Fair Value Gap boxes on chart'
+
+//-----------------------------------------------------------------------------{
+//Settings
+//-----------------------------------------------------------------------------{
+//General
+//----------------------------------------{
+mode = input.string('Historical'
+  , options = ['Historical', 'Present']
+  , group = 'Smart Money Concepts'
+  , tooltip = MODE_TOOLTIP)
+
+style = input.string('Colored'
+  , options = ['Colored', 'Monochrome']
+  , group = 'Smart Money Concepts'
+  , tooltip = STYLE_TOOLTIP)
+
+//----------------------------------------}
+//Internal Structure
+//----------------------------------------{
+show_internals = input(true, 'Show Internal Structure'
+  , group = 'Real Time Internal Structure'
+  , tooltip = SHOW_INTERNAL)
+
+show_ibull = input.string('All', 'Bullish Structure'
+  , options = ['All', 'BOS', 'CHoCH']
+  , inline = 'ibull'
+  , group = 'Real Time Internal Structure')
+
+swing_ibull_css = input(#089981, ''
+  , inline = 'ibull'
+  , group = 'Real Time Internal Structure')
+
+//Bear Structure
+show_ibear = input.string('All', 'Bearish Structure'
+  , options = ['All', 'BOS', 'CHoCH']
+  , inline = 'ibear'
+  , group = 'Real Time Internal Structure')
+
+swing_ibear_css = input(#f23645, ''
+  , inline = 'ibear'
+  , group = 'Real Time Internal Structure')
+
+ifilter_confluence = input(false, 'Confluence Filter'
+  , group = 'Real Time Internal Structure'
+  , tooltip = CONFLUENCE_FILTER)
+
+internal_structure_size = input.string('Tiny', 'Internal Label Size'
+  , options = ['Tiny', 'Small', 'Normal']
+  , group = 'Real Time Internal Structure')
+
+//----------------------------------------}
+//Swing Structure
+//----------------------------------------{
+show_Structure = input(true, 'Show Swing Structure'
+  , group = 'Real Time Swing Structure'
+  , tooltip = SHOW_SWING)
+
+//Bull Structure
+show_bull = input.string('All', 'Bullish Structure'
+  , options = ['All', 'BOS', 'CHoCH']
+  , inline = 'bull'
+  , group = 'Real Time Swing Structure')
+
+swing_bull_css = input(#089981, ''
+  , inline = 'bull'
+  , group = 'Real Time Swing Structure')
+
+//Bear Structure
+show_bear = input.string('All', 'Bearish Structure'
+  , options = ['All', 'BOS', 'CHoCH']
+  , inline = 'bear'
+  , group = 'Real Time Swing Structure')
+
+swing_bear_css = input(#f23645, ''
+  , inline = 'bear'
+  , group = 'Real Time Swing Structure')
+
+swing_structure_size = input.string('Small', 'Swing Label Size'
+  , options = ['Tiny', 'Small', 'Normal']
+  , group = 'Real Time Swing Structure')
+
+//Swings
+show_swings = input(true, 'Show Swings Points'
+  , inline = 'swings'
+  , group = 'Real Time Swing Structure'
+  , tooltip = SHOW_SWING_POINTS)
+
+length = input.int(50, ''
+  , minval = 10
+  , inline = 'swings'
+  , group = 'Real Time Swing Structure')
+
+show_hl_swings = input(true, 'Show Strong/Weak High/Low'
+  , group = 'Real Time Swing Structure'
+  , tooltip = SHOW_SWHL_POINTS)
+
+//----------------------------------------}
+//Fair Value Gaps
+//----------------------------------------{
+show_fvg = input(true, 'Fair Value Gaps'
+  , group = 'Fair Value Gaps'
+  , tooltip = SHOW_FVG)
+  
+fvg_auto = input(true, "Auto Threshold"
+  , group = 'Fair Value Gaps'
+  , tooltip = AUTO_FVG)
+
+fvg_tf = input.timeframe('', "Timeframe"
+  , group = 'Fair Value Gaps'
+  , tooltip = FVG_TF)
+
+bull_fvg_css = input.color(color.new(#00ff68, 80), 'Bullish FVG'
+  , group = 'Fair Value Gaps')
+
+bear_fvg_css = input.color(color.new(#ff0008, 80), 'Bearish FVG'
+  , group = 'Fair Value Gaps')
+
+fvg_extend = input.int(0, "Extend FVG"
+  , minval = 0
+  , group = 'Fair Value Gaps'
+  , tooltip = EXTEND_FVG)
+
+//-----------------------------------------------------------------------------}
+//Functions
+//-----------------------------------------------------------------------------{
+n = bar_index
+
+//Get ohlc values function
+get_ohlc()=> [close[1], open[1], high, low, high[2], low[2]]
+
+//Display Structure function
+display_Structure(x, y, txt, css, dashed, down, lbl_size, present)=>
+    structure_line = line.new(x, y, n, y
+      , color = css
+      , style = dashed ? line.style_dashed : line.style_solid)
+
+    structure_lbl = label.new(int(math.avg(x, n)), y, txt
+      , color = TRANSP_CSS
+      , textcolor = css
+      , style = down ? label.style_label_down : label.style_label_up
+      , size = lbl_size)
+
+    if present
+        line.delete(structure_line[1])
+        label.delete(structure_lbl[1])
+
+//Swings detection/measurements
+swings(len)=>
+    var os = 0
+    
+    upper = ta.highest(len)
+    lower = ta.lowest(len)
+
+    os := high[len] > upper ? 0 : low[len] < lower ? 1 : os[1]
+
+    top = os == 0 and os[1] != 0 ? high[len] : 0
+    btm = os == 1 and os[1] != 1 ? low[len] : 0
+
+    [top, btm]
+
+//-----------------------------------------------------------------------------}
+//Global variables
+//-----------------------------------------------------------------------------{
+var trend = 0, var itrend = 0
+
+var top_y = 0., var top_x = 0
+var btm_y = 0., var btm_x = 0
+
+var itop_y = 0., var itop_x = 0
+var ibtm_y = 0., var ibtm_x = 0
+
+var trail_up = high, var trail_dn = low
+var trail_up_x = 0,  var trail_dn_x = 0
+
+var top_cross = true,  var btm_cross = true
+var itop_cross = true, var ibtm_cross = true
+
+var txt_top = '',  var txt_btm = ''
+
+//Alerts
+bull_choch_alert = false 
+bull_bos_alert   = false 
+
+bear_choch_alert = false 
+bear_bos_alert   = false 
+
+bull_ichoch_alert = false 
+bull_ibos_alert   = false 
+
+bear_ichoch_alert = false 
+bear_ibos_alert   = false 
+
+//Structure colors
+var bull_css = style == 'Monochrome' ? #b2b5be 
+  : swing_bull_css
+
+var bear_css = style == 'Monochrome' ? #b2b5be 
+  : swing_bear_css
+
+var ibull_css = style == 'Monochrome' ? #b2b5be 
+  : swing_ibull_css
+
+var ibear_css = style == 'Monochrome' ? #b2b5be 
+  : swing_ibear_css
+
+//Labels size
+var internal_structure_lbl_size = internal_structure_size == 'Tiny' 
+  ? size.tiny 
+  : internal_structure_size == 'Small' 
+  ? size.small 
+  : size.normal 
+
+var swing_structure_lbl_size = swing_structure_size == 'Tiny' 
+  ? size.tiny 
+  : swing_structure_size == 'Small' 
+  ? size.small 
+  : size.normal 
+
+//Swings
+[top, btm] = swings(length)
+
+[itop, ibtm] = swings(5)
+
+//-----------------------------------------------------------------------------}
+//Pivot High
+//-----------------------------------------------------------------------------{
+var line extend_top = na
+
+var label extend_top_lbl = label.new(na, na
+  , color = TRANSP_CSS
+  , textcolor = bear_css
+  , style = label.style_label_down
+  , size = size.tiny)
+
+if top != 0
+    top_cross := true
+    txt_top := top > top_y ? 'HH' : 'LH'
+
+    if show_swings
+        top_lbl = label.new(n-length, top, txt_top
+          , color = TRANSP_CSS
+          , textcolor = bear_css
+          , style = label.style_label_down
+          , size = swing_structure_lbl_size)
+
+        if mode == 'Present'
+            label.delete(top_lbl[1])
+
+    //Extend recent top to last bar
+    line.delete(extend_top[1])
+    extend_top := line.new(n-length, top, n, top
+      , color = bear_css)
+
+    top_y := top
+    top_x := n - length
+
+    trail_up := top
+    trail_up_x := n - length
+
+if itop != 0
+    itop_cross := true
+
+    itop_y := itop
+    itop_x := n - 5
+
+//Trailing maximum
+trail_up := math.max(high, trail_up)
+trail_up_x := trail_up == high ? n : trail_up_x
+
+//Set top extension label/line
+if barstate.islast and show_hl_swings
+    line.set_xy1(extend_top, trail_up_x, trail_up)
+    line.set_xy2(extend_top, n + 20, trail_up)
+
+    label.set_x(extend_top_lbl, n + 20)
+    label.set_y(extend_top_lbl, trail_up)
+    label.set_text(extend_top_lbl, trend < 0 ? 'Strong High' : 'Weak High')
+
+//-----------------------------------------------------------------------------}
+//Pivot Low
+//-----------------------------------------------------------------------------{
+var line extend_btm = na 
+
+var label extend_btm_lbl = label.new(na, na
+  , color = TRANSP_CSS
+  , textcolor = bull_css
+  , style = label.style_label_up
+  , size = size.tiny)
+
+if btm != 0
+    btm_cross := true
+    txt_btm := btm < btm_y ? 'LL' : 'HL'
+    
+    if show_swings
+        btm_lbl = label.new(n - length, btm, txt_btm
+          , color = TRANSP_CSS
+          , textcolor = bull_css
+          , style = label.style_label_up
+          , size = swing_structure_lbl_size)
+
+        if mode == 'Present'
+            label.delete(btm_lbl[1])
+    
+    //Extend recent btm to last bar
+    line.delete(extend_btm[1])
+    extend_btm := line.new(n - length, btm, n, btm
+      , color = bull_css)
+
+    btm_y := btm
+    btm_x := n-length
+
+    trail_dn := btm
+    trail_dn_x := n-length
+
+if ibtm != 0
+    ibtm_cross := true
+
+    ibtm_y := ibtm
+    ibtm_x := n - 5
+
+//Trailing minimum
+trail_dn := math.min(low, trail_dn)
+trail_dn_x := trail_dn == low ? n : trail_dn_x
+
+//Set btm extension label/line
+if barstate.islast and show_hl_swings
+    line.set_xy1(extend_btm, trail_dn_x, trail_dn)
+    line.set_xy2(extend_btm, n + 20, trail_dn)
+
+    label.set_x(extend_btm_lbl, n + 20)
+    label.set_y(extend_btm_lbl, trail_dn)
+    label.set_text(extend_btm_lbl, trend > 0 ? 'Strong Low' : 'Weak Low')
+
+//-----------------------------------------------------------------------------}
+//Pivot High BOS/CHoCH
+//-----------------------------------------------------------------------------{
+//Filtering
+var bull_concordant = true
+
+if ifilter_confluence
+    bull_concordant := high - math.max(close, open) > math.min(close, open - low)
+
+//Detect internal bullish Structure
+if ta.crossover(close, itop_y) and itop_cross and top_y != itop_y and bull_concordant
+    bool choch = false
+    
+    if itrend < 0
+        choch := true
+        bull_ichoch_alert := true
+    else 
+        bull_ibos_alert := true
+    
+    txt = choch ? 'CHoCH' : 'BOS'
+
+    if show_internals
+        if show_ibull == 'All' or (show_ibull == 'BOS' and not choch) or (show_ibull == 'CHoCH' and choch)
+            display_Structure(itop_x, itop_y, txt, ibull_css, true, true, internal_structure_lbl_size, true)
+    
+    itop_cross := false
+    itrend := 1
+
+//Detect bullish Structure
+if ta.crossover(close, top_y) and top_cross
+    bool choch = false
+    
+    if trend < 0
+        choch := true
+        bull_choch_alert := true
+    else 
+        bull_bos_alert := true
+
+    txt = choch ? 'CHoCH' : 'BOS'
+    
+    if show_Structure
+        if show_bull == 'All' or (show_bull == 'BOS' and not choch) or (show_bull == 'CHoCH' and choch)
+            display_Structure(top_x, top_y, txt, bull_css, false, true, swing_structure_lbl_size, mode == 'Present')
+    
+    top_cross := false
+    trend := 1
+
+//-----------------------------------------------------------------------------}
+//Pivot Low BOS/CHoCH
+//-----------------------------------------------------------------------------{
+var bear_concordant = true
+
+if ifilter_confluence
+    bear_concordant := high - math.max(close, open) < math.min(close, open - low)
+
+//Detect internal bearish Structure
+if ta.crossunder(close, ibtm_y) and ibtm_cross and btm_y != ibtm_y and bear_concordant
+    bool choch = false
+    
+    if itrend > 0
+        choch := true
+        bear_ichoch_alert := true
+    else 
+        bear_ibos_alert := true
+    
+    txt = choch ? 'CHoCH' : 'BOS'
+
+    if show_internals
+        if show_ibear == 'All' or (show_ibear == 'BOS' and not choch) or (show_ibear == 'CHoCH' and choch)
+            display_Structure(ibtm_x, ibtm_y, txt, ibear_css, true, false, internal_structure_lbl_size, true)
+    
+    ibtm_cross := false
+    itrend := -1
+
+//Detect bearish Structure
+if ta.crossunder(close, btm_y) and btm_cross
+    bool choch = false
+    
+    if trend > 0
+        choch := true
+        bear_choch_alert := true
+    else 
+        bear_bos_alert := true
+
+    txt = choch ? 'CHoCH' : 'BOS'
+    
+    if show_Structure
+        if show_bear == 'All' or (show_bear == 'BOS' and not choch) or (show_bear == 'CHoCH' and choch)
+            display_Structure(btm_x, btm_y, txt, bear_css, false, false, swing_structure_lbl_size, mode == 'Present')
+    
+    btm_cross := false
+    trend := -1
+
+//-----------------------------------------------------------------------------}
+//Fair Value Gaps
+//-----------------------------------------------------------------------------{
+var bullish_fvg_max = array.new_box(0)
+var bullish_fvg_min = array.new_box(0)
+
+var bearish_fvg_max = array.new_box(0)
+var bearish_fvg_min = array.new_box(0)
+
+float bullish_fvg_avg = na
+float bearish_fvg_avg = na
+
+bullish_fvg_cnd = false
+bearish_fvg_cnd = false
+
+[src_c1, src_o1, src_h, src_l, src_h2, src_l2] =
+  request.security(syminfo.tickerid, fvg_tf, get_ohlc())
+
+if show_fvg
+    delta_per = (src_c1 - src_o1) / src_o1 * 100
+
+    change_tf = timeframe.change(fvg_tf)
+
+    threshold = fvg_auto ? ta.cum(math.abs(change_tf ? delta_per : 0)) / n * 2 
+      : 0
+
+    //FVG conditions
+    bullish_fvg_cnd := src_l > src_h2
+      and src_c1 > src_h2 
+      and delta_per > threshold
+      and change_tf
+
+    bearish_fvg_cnd := src_h < src_l2 
+      and src_c1 < src_l2 
+      and -delta_per > threshold
+      and change_tf
+
+    //FVG Areas
+    if bullish_fvg_cnd
+        array.unshift(bullish_fvg_max, box.new(n-1, src_l, n + fvg_extend, math.avg(src_l, src_h2)
+          , border_color = bull_fvg_css
+          , bgcolor = bull_fvg_css))
+        
+        array.unshift(bullish_fvg_min, box.new(n-1, math.avg(src_l, src_h2), n + fvg_extend, src_h2
+          , border_color = bull_fvg_css
+          , bgcolor = bull_fvg_css))
+    
+    if bearish_fvg_cnd
+        array.unshift(bearish_fvg_max, box.new(n-1, src_h, n + fvg_extend, math.avg(src_h, src_l2)
+          , border_color = bear_fvg_css
+          , bgcolor = bear_fvg_css))
+        
+        array.unshift(bearish_fvg_min, box.new(n-1, math.avg(src_h, src_l2), n + fvg_extend, src_l2
+          , border_color = bear_fvg_css
+          , bgcolor = bear_fvg_css))
+
+    for bx in bullish_fvg_min
+        if low < box.get_bottom(bx)
+            box.delete(bx)
+            box.delete(array.get(bullish_fvg_max, array.indexof(bullish_fvg_min, bx)))
+    
+    for bx in bearish_fvg_max
+        if high > box.get_top(bx)
+            box.delete(bx)
+            box.delete(array.get(bearish_fvg_min, array.indexof(bearish_fvg_max, bx)))
+
+// *****************************************************************************
+// *** Trend Table
+// *****************************************************************************
+
+//-----------------------------------------------------------------------------{
+// Settings
+//-----------------------------------------------------------------------------{
+show_trend_table = input(true, 'Show Trend Table'
+  , group = 'Trend Table')
+
+trend_table_pos = input.string('Bottom Left', 'Position'
+  , options = ['Bottom Right', 'Bottom Left', 'Top Right', 'Top Left']
+  , group = 'Trend Table')
+
+show_tf_1m  = input(true, '1m',  inline = 'tf_row1', group = 'Trend Table')
+show_tf_5m  = input(true, '5m',  inline = 'tf_row1', group = 'Trend Table')
+show_tf_15m = input(true, '15m', inline = 'tf_row1', group = 'Trend Table')
+show_tf_1h  = input(true, '1h',  inline = 'tf_row2', group = 'Trend Table')
+show_tf_4h  = input(true, '4h',  inline = 'tf_row2', group = 'Trend Table')
+show_tf_1d  = input(true, '1d',  inline = 'tf_row2', group = 'Trend Table')
+show_tf_1w  = input(true, '1w',  inline = 'tf_row2', group = 'Trend Table')
+
+//-----------------------------------------------------------------------------{
+// Colors
+//-----------------------------------------------------------------------------{
+color TBL_GREEN   = color.new(#089981, 0)
+color TBL_RED     = color.new(#f23645, 0)
+color TBL_NEUTRAL = color.new(#434651, 0)
+color TBL_HEADER  = color.new(#1e222d, 0)
+color TBL_TEXT    = color.white
+
+//-----------------------------------------------------------------------------{
+// Helper: RSI cell background color
+//-----------------------------------------------------------------------------{
+rsi_cell_color(rsi_val) =>
+    rsi_val >= 70 ? TBL_RED
+      : rsi_val <= 30 ? TBL_GREEN
+      : TBL_NEUTRAL
+
+// Format bar count suffix
+bc(v) => na(v) ? "" : str.tostring(int(v))
+
+//-----------------------------------------------------------------------------{
+// Multi-timeframe data requests
+// Returns: [rsi, abv_ma20, abv_ma200, macd_bull, bars_ma20, bars_ma200, bars_macd, bars_rsi_obos]
+//-----------------------------------------------------------------------------{
+get_tf_data() =>
+    _rsi    = ta.rsi(close, 14)
+    _rsi_sig = ta.ema(_rsi, 9)
+    _ma20v  = matype == "EMA" ? ta.ema(close, 20)  : ta.sma(close, 20)
+    _ma200v = matype == "EMA" ? ta.ema(close, 200) : ta.sma(close, 200)
+    [_macd, _sig, _] = ta.macd(close, 12, 26, 9)
+    abv_ma20  = close > _ma20v
+    abv_ma200 = close > _ma200v
+    macd_bull = _macd > _sig
+    rsi_bull  = _rsi > _rsi_sig
+    bars_ma20  = ta.barssince(ta.cross(close, _ma20v))
+    bars_ma200 = ta.barssince(ta.cross(close, _ma200v))
+    bars_macd  = ta.barssince(ta.cross(_macd, _sig))
+    bars_rsi   = ta.barssince(ta.cross(_rsi, _rsi_sig))
+    [_rsi, abv_ma20, abv_ma200, macd_bull, bars_ma20, bars_ma200, bars_macd, rsi_bull, bars_rsi]
+
+[rsi_1m,  abv_ma20_1m,  abv_ma200_1m,  mbull_1m,  bma20_1m,  bma200_1m,  bmacd_1m,  rbull_1m,  brsi_1m]  = request.security(syminfo.tickerid, "1",   get_tf_data())
+[rsi_5m,  abv_ma20_5m,  abv_ma200_5m,  mbull_5m,  bma20_5m,  bma200_5m,  bmacd_5m,  rbull_5m,  brsi_5m]  = request.security(syminfo.tickerid, "5",   get_tf_data())
+[rsi_15m, abv_ma20_15m, abv_ma200_15m, mbull_15m, bma20_15m, bma200_15m, bmacd_15m, rbull_15m, brsi_15m] = request.security(syminfo.tickerid, "15",  get_tf_data())
+[rsi_1h,  abv_ma20_1h,  abv_ma200_1h,  mbull_1h,  bma20_1h,  bma200_1h,  bmacd_1h,  rbull_1h,  brsi_1h]  = request.security(syminfo.tickerid, "60",  get_tf_data())
+[rsi_4h,  abv_ma20_4h,  abv_ma200_4h,  mbull_4h,  bma20_4h,  bma200_4h,  bmacd_4h,  rbull_4h,  brsi_4h]  = request.security(syminfo.tickerid, "240", get_tf_data())
+[rsi_1d,  abv_ma20_1d,  abv_ma200_1d,  mbull_1d,  bma20_1d,  bma200_1d,  bmacd_1d,  rbull_1d,  brsi_1d]  = request.security(syminfo.tickerid, "D",   get_tf_data())
+[rsi_1w,  abv_ma20_1w,  abv_ma200_1w,  mbull_1w,  bma20_1w,  bma200_1w,  bmacd_1w,  rbull_1w,  brsi_1w]  = request.security(syminfo.tickerid, "W",   get_tf_data())
+
+//-----------------------------------------------------------------------------{
+// Table
+//-----------------------------------------------------------------------------{
+var tbl_pos = trend_table_pos == 'Bottom Left'  ? position.bottom_left
+  : trend_table_pos == 'Top Right'   ? position.top_right
+  : trend_table_pos == 'Top Left'    ? position.top_left
+  : position.bottom_right
+
+var table trendTable = table.new(tbl_pos, 5, 8
+  , bgcolor      = color.new(#1e222d, 0)
+  , border_color = color.new(color.gray, 70)
+  , border_width  = 1)
+
+// Row helper
+// bars_* = bars since last cross/event; na if never occurred
+set_tf_row(row, tf_lbl, rsi_val, abv_ma20, abv_ma200, macd_bull, rsi_bull, bars_ma20, bars_ma200, bars_macd, bars_rsi) =>
+    table.cell(trendTable, 0, row, tf_lbl
+      , text_color = TBL_TEXT, text_size = size.small, bgcolor = TBL_HEADER)
+    table.cell(trendTable, 1, row, (abv_ma20 ? "▲" : "▼") + bc(bars_ma20)
+      , text_color = TBL_TEXT, text_size = size.small, bgcolor = abv_ma20 ? TBL_GREEN : TBL_RED)
+    table.cell(trendTable, 2, row, (abv_ma200 ? "▲" : "▼") + bc(bars_ma200)
+      , text_color = TBL_TEXT, text_size = size.small, bgcolor = abv_ma200 ? TBL_GREEN : TBL_RED)
+    table.cell(trendTable, 3, row, (macd_bull ? "▲" : "▼") + bc(bars_macd)
+      , text_color = TBL_TEXT, text_size = size.small, bgcolor = macd_bull ? TBL_GREEN : TBL_RED)
+    table.cell(trendTable, 4, row, str.tostring(math.round(rsi_val, 1)) + (na(bars_rsi) ? "" : "—" + bc(bars_rsi))
+      , text_color = TBL_TEXT, text_size = size.small, bgcolor = rsi_bull ? TBL_GREEN : TBL_RED)
+
+if show_trend_table and barstate.islast
+    // Header
+    table.cell(trendTable, 0, 0, "TF"
+      , text_color = TBL_TEXT, text_size = size.small, bgcolor = TBL_HEADER)
+    table.cell(trendTable, 1, 0, "20"
+      , text_color = TBL_TEXT, text_size = size.small, bgcolor = TBL_HEADER)
+    table.cell(trendTable, 2, 0, "200"
+      , text_color = TBL_TEXT, text_size = size.small, bgcolor = TBL_HEADER)
+    table.cell(trendTable, 3, 0, "M"
+      , text_color = TBL_TEXT, text_size = size.small, bgcolor = TBL_HEADER)
+    table.cell(trendTable, 4, 0, "R"
+      , text_color = TBL_TEXT, text_size = size.small, bgcolor = TBL_HEADER)
+
+    // Data rows (only enabled timeframes, packed consecutively)
+    r = 1
+    if show_tf_1m
+        set_tf_row(r, "1m",  rsi_1m,  abv_ma20_1m,  abv_ma200_1m,  mbull_1m,  rbull_1m,  bma20_1m,  bma200_1m,  bmacd_1m,  brsi_1m)
+        r := r + 1
+    if show_tf_5m
+        set_tf_row(r, "5m",  rsi_5m,  abv_ma20_5m,  abv_ma200_5m,  mbull_5m,  rbull_5m,  bma20_5m,  bma200_5m,  bmacd_5m,  brsi_5m)
+        r := r + 1
+    if show_tf_15m
+        set_tf_row(r, "15m", rsi_15m, abv_ma20_15m, abv_ma200_15m, mbull_15m, rbull_15m, bma20_15m, bma200_15m, bmacd_15m, brsi_15m)
+        r := r + 1
+    if show_tf_1h
+        set_tf_row(r, "1h",  rsi_1h,  abv_ma20_1h,  abv_ma200_1h,  mbull_1h,  rbull_1h,  bma20_1h,  bma200_1h,  bmacd_1h,  brsi_1h)
+        r := r + 1
+    if show_tf_4h
+        set_tf_row(r, "4h",  rsi_4h,  abv_ma20_4h,  abv_ma200_4h,  mbull_4h,  rbull_4h,  bma20_4h,  bma200_4h,  bmacd_4h,  brsi_4h)
+        r := r + 1
+    if show_tf_1d
+        set_tf_row(r, "1d",  rsi_1d,  abv_ma20_1d,  abv_ma200_1d,  mbull_1d,  rbull_1d,  bma20_1d,  bma200_1d,  bmacd_1d,  brsi_1d)
+        r := r + 1
+    if show_tf_1w
+        set_tf_row(r, "1w",  rsi_1w,  abv_ma20_1w,  abv_ma200_1w,  mbull_1w,  rbull_1w,  bma20_1w,  bma200_1w,  bmacd_1w,  brsi_1w)
