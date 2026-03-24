@@ -23,6 +23,7 @@ showDivLabels  = input.bool(false, "Show Divergence Labels", group="Divergence S
 enforcePotZone = input.bool(true, "Potential: Enforce Opposite Pivot Zone", group="Divergence Settings")
 
 // ─── MTF Table Settings ──────────────────────────────────────────────────────
+tableMaxBars = input.int(30, "Table Conf/Kill Max Bars", minval=1, group="MTF Table Settings", tooltip="Only show confirmed/killed divergences within this many bars")
 tablePos = input.string("top_left", "Table Position",
      options=["top_left","top_right","bottom_left","bottom_right","top_center","bottom_center"],
      group="MTF Table Settings")
@@ -75,6 +76,50 @@ f_isBearPotValid(oscPivot, pricePivot, oscValue, lastBearOsc, lastBearPrice, opp
     withinZone = not enforceZone or na(oppositeBullOsc) or oscValue > oppositeBullOsc
     oscPivot and pricePivot and hasBearRef and oscValue < lastBearOsc and withinZone and priceValue > lastBearPrice and f_isInRange(barsSinceBear, rngLow, rngHigh)
 
+f_divergenceState(osc, lbLeft, lbRight, rngLow, rngHigh, enforceZone) =>
+    plFound = not na(ta.pivotlow(osc,  lbLeft, lbRight))
+    phFound = not na(ta.pivothigh(osc, lbLeft, lbRight))
+    bsPl = ta.barssince(plFound)
+    bsPh = ta.barssince(phFound)
+
+    oscLBR  = osc[lbRight]
+    lowLBR  = low[lbRight]
+    highLBR = high[lbRight]
+
+    lastPlOsc   = ta.valuewhen(plFound, oscLBR,  0)
+    lastPlPrice = ta.valuewhen(plFound, lowLBR,  0)
+    lastPhOsc   = ta.valuewhen(phFound, oscLBR,  0)
+    lastPhPrice = ta.valuewhen(phFound, highLBR, 0)
+
+    prevPlOsc   = ta.valuewhen(plFound, oscLBR,  1)
+    prevPlPrice = ta.valuewhen(plFound, lowLBR,  1)
+    prevPhOsc   = ta.valuewhen(phFound, oscLBR,  1)
+    prevPhPrice = ta.valuewhen(phFound, highLBR, 1)
+
+    bull = plFound and oscLBR > prevPlOsc and lowLBR < prevPlPrice and f_isInRange(bsPl[1], rngLow, rngHigh)
+    bear = phFound and oscLBR < prevPhOsc and highLBR > prevPhPrice and f_isInRange(bsPh[1], rngLow, rngHigh)
+
+    cbsBull = ta.barssince(bull)
+    cbsBear = ta.barssince(bear)
+    killBull = not na(cbsBull) and cbsBull <= rngHigh and close < ta.valuewhen(bull, lowLBR, 0)
+    killBear = not na(cbsBear) and cbsBear <= rngHigh and close > ta.valuewhen(bear, highLBR, 0)
+
+    // Search for potential pivot extremes starting from bar 1 (exclude current bar — it's still forming)
+    potBullOff = f_barsAgo(ta.lowestbars(osc[1],  lbLeft)) + 1
+    potBearOff = f_barsAgo(ta.highestbars(osc[1], lbLeft)) + 1
+    potBullOsc = osc[potBullOff]
+    potBearOsc = osc[potBearOff]
+    potBullPrice = low[potBullOff]
+    potBearPrice = high[potBearOff]
+    // Distance from actual confirmed pivot bar (bsPl + lbRight ago) to potential pivot bar (potBullOff ago)
+    potBsBull = bsPl + lbRight - potBullOff
+    potBsBear = bsPh + lbRight - potBearOff
+
+    potBull = potBullOff < lbRight and f_isBullPotValid(true, true, potBullOsc, lastPlOsc, lastPlPrice, lastPhOsc, potBullPrice, potBsBull, rngLow, rngHigh, enforceZone)
+    potBear = potBearOff < lbRight and f_isBearPotValid(true, true, potBearOsc, lastPhOsc, lastPhPrice, lastPlOsc, potBearPrice, potBsBear, rngLow, rngHigh, enforceZone)
+
+    [plFound, phFound, bull, bear, potBull, potBear, cbsBull, cbsBear, killBull, killBear, potBullOff, potBearOff, potBullOsc, potBearOsc]
+
 // ─── MTF Potential Divergence Function (uses close/low/high from requested TF) ─
 f_potDiv(rsiLen, fast, slow, sig, lbLeft, lbRight, rngLow, rngHigh) =>
     rsiChg  = ta.change(close)
@@ -86,6 +131,8 @@ f_potDiv(rsiLen, fast, slow, sig, lbLeft, lbRight, rngLow, rngHigh) =>
     macdV   = mFast - mSlow
     sigV    = ta.ema(macdV, sig)
     histV   = macdV - sigV
+    mCrossUp   = ta.crossover(macdV, sigV)
+    mCrossDown = ta.crossunder(macdV, sigV)
 
     // Normalize MACD and histogram first so confirmed pivots match the displayed series.
     macdVHigh    = ta.highest(macdV[1], normPeriod)
@@ -94,210 +141,28 @@ f_potDiv(rsiLen, fast, slow, sig, lbLeft, lbRight, rngLow, rngHigh) =>
     histVAbsMax  = math.max(math.abs(ta.highest(histV[1], normPeriod)), math.abs(ta.lowest(histV[1], normPeriod)))
     histVNorm    = histVAbsMax != 0.0 ? histV / histVAbsMax * 30 + 50 : 50.0
 
-    rsiPl  = not na(ta.pivotlow(rsiV,  lbLeft, lbRight))
-    rsiPh  = not na(ta.pivothigh(rsiV, lbLeft, lbRight))
-    histPl = not na(ta.pivotlow(histVNorm,  lbLeft, lbRight))
-    histPh = not na(ta.pivothigh(histVNorm, lbLeft, lbRight))
-    macdPl = not na(ta.pivotlow(macdVNorm,  lbLeft, lbRight))
-    macdPh = not na(ta.pivothigh(macdVNorm, lbLeft, lbRight))
+    [_, _, _, _, rBull, rBear, cbsRBull, cbsRBear, kRBull, kRBear, _, _, _, _] =
+       f_divergenceState(rsiV, lbLeft, lbRight, rngLow, rngHigh, enforcePotZone)
+    [_, _, _, _, hBull, hBear, cbsHBull, cbsHBear, kHBull, kHBear, _, _, _, _] =
+       f_divergenceState(histVNorm, lbLeft, lbRight, rngLow, rngHigh, enforcePotZone)
+    [_, _, _, _, mBull, mBear, cbsMBull, cbsMBear, kMBull, kMBear, _, _, _, _] =
+       f_divergenceState(macdVNorm, lbLeft, lbRight, rngLow, rngHigh, enforcePotZone)
 
-    bsRPl = ta.barssince(rsiPl)
-    bsRPh = ta.barssince(rsiPh)
-    bsHPl = ta.barssince(histPl)
-    bsHPh = ta.barssince(histPh)
-    bsMPl = ta.barssince(macdPl)
-    bsMPh = ta.barssince(macdPh)
+    [rBull, rBear, hBull, hBear, mBull, mBear, cbsRBull, cbsRBear, cbsHBull, cbsHBear, cbsMBull, cbsMBear, kRBull, kRBear, kHBull, kHBear, kMBull, kMBear, mCrossUp, mCrossDown]
 
-    rV_lbr = rsiV[lbRight]
-    lo_lbr = low[lbRight]
-    hi_lbr = high[lbRight]
-    hV_lbr = histVNorm[lbRight]
-    mV_lbr = macdVNorm[lbRight]
-
-    histVNormLBR = histVNorm[lbRight]
-    macdVNormLBR = macdVNorm[lbRight]
-
-    rPlRsi  = ta.valuewhen(rsiPl,  rV_lbr,      0)
-    rPlLow  = ta.valuewhen(rsiPl,  lo_lbr,      0)
-    rPhRsi  = ta.valuewhen(rsiPh,  rV_lbr,      0)
-    rPhHigh = ta.valuewhen(rsiPh,  hi_lbr,      0)
-    // Potential references use normalized values (consistent with visual space)
-    hPlH    = ta.valuewhen(histPl, histVNormLBR, 0)
-    hPlLow  = ta.valuewhen(histPl, lo_lbr,       0)
-    hPhH    = ta.valuewhen(histPh, histVNormLBR, 0)
-    hPhHigh = ta.valuewhen(histPh, hi_lbr,       0)
-    mPlM    = ta.valuewhen(macdPl, macdVNormLBR, 0)
-    mPlLow  = ta.valuewhen(macdPl, lo_lbr,       0)
-    mPhM    = ta.valuewhen(macdPh, macdVNormLBR, 0)
-    mPhHigh = ta.valuewhen(macdPh, hi_lbr,       0)
-
-    // Potential divergence uses the candidate pivot found inside the left-lookback window, including the current bar.
-    rsiPotPlOff   = f_barsAgo(ta.lowestbars(rsiV,      lbLeft + 1))
-    rsiPotPhOff   = f_barsAgo(ta.highestbars(rsiV,     lbLeft + 1))
-    histPotPlOff  = f_barsAgo(ta.lowestbars(histVNorm, lbLeft + 1))
-    histPotPhOff  = f_barsAgo(ta.highestbars(histVNorm, lbLeft + 1))
-    macdPotPlOff  = f_barsAgo(ta.lowestbars(macdVNorm, lbLeft + 1))
-    macdPotPhOff  = f_barsAgo(ta.highestbars(macdVNorm, lbLeft + 1))
-    pricePotPlOff = f_barsAgo(ta.lowestbars(low,       lbLeft + 1))
-    pricePotPhOff = f_barsAgo(ta.highestbars(high,     lbLeft + 1))
-
-    rsiPotPl  = rsiPotPlOff == pricePotPlOff
-    rsiPotPh  = rsiPotPhOff == pricePotPhOff
-    histPotPl = histPotPlOff == pricePotPlOff
-    histPotPh = histPotPhOff == pricePotPhOff
-    macdPotPl = macdPotPlOff == pricePotPlOff
-    macdPotPh = macdPotPhOff == pricePotPhOff
-
-    potRsiVBull  = rsiV[rsiPotPlOff]
-    potRsiVBear  = rsiV[rsiPotPhOff]
-    potHistVBull = histVNorm[histPotPlOff]
-    potHistVBear = histVNorm[histPotPhOff]
-    potMacdVBull = macdVNorm[macdPotPlOff]
-    potMacdVBear = macdVNorm[macdPotPhOff]
-    potLow       = low[pricePotPlOff]
-    potHigh      = high[pricePotPhOff]
-    potBsRPl     = bsRPl - rsiPotPlOff
-    potBsRPh     = bsRPh - rsiPotPhOff
-    potBsHPl     = bsHPl - histPotPlOff
-    potBsHPh     = bsHPh - histPotPhOff
-    potBsMPl     = bsMPl - macdPotPlOff
-    potBsMPh     = bsMPh - macdPotPhOff
-
-    // Bull: oscillator higher low — also require it hasn't broken above last confirmed high (still in divergence zone)
-    // Bear: oscillator lower high — also require it hasn't broken below last confirmed low (still in divergence zone)
-    // hist/MACD comparisons use normalized values to match visual space
-    rBull = f_isBullPotValid(rsiPotPl, true, potRsiVBull, lastBullOsc=rPlRsi, lastBullPrice=rPlLow, oppositeBearOsc=rPhRsi, priceValue=potLow, barsSinceBull=potBsRPl, rngLow=rngLow, rngHigh=rngHigh, enforceZone=enforcePotZone)
-    rBear = f_isBearPotValid(rsiPotPh, true, potRsiVBear, lastBearOsc=rPhRsi, lastBearPrice=rPhHigh, oppositeBullOsc=rPlRsi, priceValue=potHigh, barsSinceBear=potBsRPh, rngLow=rngLow, rngHigh=rngHigh, enforceZone=enforcePotZone)
-    hBull = f_isBullPotValid(histPotPl, true, potHistVBull, lastBullOsc=hPlH, lastBullPrice=hPlLow, oppositeBearOsc=hPhH, priceValue=potLow, barsSinceBull=potBsHPl, rngLow=rngLow, rngHigh=rngHigh, enforceZone=enforcePotZone)
-    hBear = f_isBearPotValid(histPotPh, true, potHistVBear, lastBearOsc=hPhH, lastBearPrice=hPhHigh, oppositeBullOsc=hPlH, priceValue=potHigh, barsSinceBear=potBsHPh, rngLow=rngLow, rngHigh=rngHigh, enforceZone=enforcePotZone)
-    mBull = f_isBullPotValid(macdPotPl, true, potMacdVBull, lastBullOsc=mPlM, lastBullPrice=mPlLow, oppositeBearOsc=mPhM, priceValue=potLow, barsSinceBull=potBsMPl, rngLow=rngLow, rngHigh=rngHigh, enforceZone=enforcePotZone)
-    mBear = f_isBearPotValid(macdPotPh, true, potMacdVBear, lastBearOsc=mPhM, lastBearPrice=mPhHigh, oppositeBullOsc=mPlM, priceValue=potHigh, barsSinceBear=potBsMPh, rngLow=rngLow, rngHigh=rngHigh, enforceZone=enforcePotZone)
-
-    // ── Confirmed divergences (pivot fully formed, compare to prior pivot) ──
-    rPlRsiPrev  = ta.valuewhen(rsiPl,  rV_lbr, 1)
-    rPlLowPrev  = ta.valuewhen(rsiPl,  lo_lbr, 1)
-    rPhRsiPrev  = ta.valuewhen(rsiPh,  rV_lbr, 1)
-    rPhHighPrev = ta.valuewhen(rsiPh,  hi_lbr, 1)
-    hPlHPrev    = ta.valuewhen(histPl, hV_lbr, 1)
-    hPlLowPrev  = ta.valuewhen(histPl, lo_lbr, 1)
-    hPhHPrev    = ta.valuewhen(histPh, hV_lbr, 1)
-    hPhHighPrev = ta.valuewhen(histPh, hi_lbr, 1)
-    mPlMPrev    = ta.valuewhen(macdPl, mV_lbr, 1)
-    mPlLowPrev  = ta.valuewhen(macdPl, lo_lbr, 1)
-    mPhMPrev    = ta.valuewhen(macdPh, mV_lbr, 1)
-    mPhHighPrev = ta.valuewhen(macdPh, hi_lbr, 1)
-
-    // Use [1] index instead of ta.barssince(x[1]) — equivalent and avoids 6 extra barssince calls
-    bsRPlP = bsRPl[1]
-    bsRPhP = bsRPh[1]
-    bsHPlP = bsHPl[1]
-    bsHPhP = bsHPh[1]
-    bsMPlP = bsMPl[1]
-    bsMPhP = bsMPh[1]
-
-    cRBull = rsiPl  and rV_lbr > rPlRsiPrev  and lo_lbr < rPlLowPrev  and bsRPlP >= rngLow and bsRPlP <= rngHigh
-    cRBear = rsiPh  and rV_lbr < rPhRsiPrev  and hi_lbr > rPhHighPrev and bsRPhP >= rngLow and bsRPhP <= rngHigh
-    cHBull = histPl and hV_lbr > hPlHPrev    and lo_lbr < hPlLowPrev  and bsHPlP >= rngLow and bsHPlP <= rngHigh
-    cHBear = histPh and hV_lbr < hPhHPrev    and hi_lbr > hPhHighPrev and bsHPhP >= rngLow and bsHPhP <= rngHigh
-    cMBull = macdPl and mV_lbr > mPlMPrev    and lo_lbr < mPlLowPrev  and bsMPlP >= rngLow and bsMPlP <= rngHigh
-    cMBear = macdPh and mV_lbr < mPhMPrev    and hi_lbr > mPhHighPrev and bsMPhP >= rngLow and bsMPhP <= rngHigh
-
-    // barssince confirmed — na until first occurrence; used for "N bars ago" display
-    cbsRBull = ta.barssince(cRBull)
-    cbsRBear = ta.barssince(cRBear)
-    cbsHBull = ta.barssince(cHBull)
-    cbsHBear = ta.barssince(cHBear)
-    cbsMBull = ta.barssince(cMBull)
-    cbsMBear = ta.barssince(cMBear)
-
-    // Killed: close breaks the pivot price level that formed the confirmed divergence
-    // Bull killed → close < pivot low of that divergence
-    // Bear killed → close > pivot high of that divergence
-    kRBull = not na(cbsRBull) and cbsRBull <= rngHigh and close < ta.valuewhen(cRBull, lo_lbr, 0)
-    kRBear = not na(cbsRBear) and cbsRBear <= rngHigh and close > ta.valuewhen(cRBear, hi_lbr, 0)
-    kHBull = not na(cbsHBull) and cbsHBull <= rngHigh and close < ta.valuewhen(cHBull, lo_lbr, 0)
-    kHBear = not na(cbsHBear) and cbsHBear <= rngHigh and close > ta.valuewhen(cHBear, hi_lbr, 0)
-    kMBull = not na(cbsMBull) and cbsMBull <= rngHigh and close < ta.valuewhen(cMBull, lo_lbr, 0)
-    kMBear = not na(cbsMBear) and cbsMBear <= rngHigh and close > ta.valuewhen(cMBear, hi_lbr, 0)
-
-    [rBull, rBear, hBull, hBear, mBull, mBear, cbsRBull, cbsRBear, cbsHBull, cbsHBear, cbsMBull, cbsMBear, kRBull, kRBear, kHBull, kHBear, kMBull, kMBear]
-
-// ─── RSI Divergence Detection ────────────────────────────────────────────────
+// ─── Divergence State Detection ─────────────────────────────────────────────
 rsiLBR  = rsi[lookbackRight]
 lowLBR  = low[lookbackRight]
 highLBR = high[lookbackRight]
-
-rsiPlFound = not na(ta.pivotlow(rsi,  lookbackLeft, lookbackRight))
-rsiPhFound = not na(ta.pivothigh(rsi, lookbackLeft, lookbackRight))
-// barssince computed once here — reused for both confirmed div range check and potential div
-bsRsiPl = ta.barssince(rsiPlFound)
-bsRsiPh = ta.barssince(rsiPhFound)
-
-// RSI Bullish: price lower low + RSI higher low
-rsiHL      = rsiLBR > ta.valuewhen(rsiPlFound, rsiLBR, 1) and (rangeLower <= bsRsiPl[1] and bsRsiPl[1] <= rangeUpper)
-rsiPriceLL = lowLBR  < ta.valuewhen(rsiPlFound, lowLBR,  1)
-rsiBull    = rsiPriceLL and rsiHL  and rsiPlFound
-
-// RSI Bearish: price higher high + RSI lower high
-rsiLH      = rsiLBR < ta.valuewhen(rsiPhFound, rsiLBR, 1) and (rangeLower <= bsRsiPh[1] and bsRsiPh[1] <= rangeUpper)
-rsiPriceHH = highLBR > ta.valuewhen(rsiPhFound, highLBR, 1)
-rsiBear    = rsiPriceHH and rsiLH and rsiPhFound
-
-// ─── MACD Histogram Divergence Detection ─────────────────────────────────────
-histLBR = hist[lookbackRight]
 histNormLBR = histNorm[lookbackRight]
-
-macdPlFound = not na(ta.pivotlow(histNorm,  lookbackLeft, lookbackRight))
-macdPhFound = not na(ta.pivothigh(histNorm, lookbackLeft, lookbackRight))
-bsMacdPl    = ta.barssince(macdPlFound)
-bsMacdPh    = ta.barssince(macdPhFound)
-
-// MACD Bullish: price lower low + histogram higher low
-macdHL      = histNormLBR > ta.valuewhen(macdPlFound, histNormLBR, 1) and (rangeLower <= bsMacdPl[1] and bsMacdPl[1] <= rangeUpper)
-macdPriceLL = lowLBR  < ta.valuewhen(macdPlFound, lowLBR,  1)
-macdBull    = macdPriceLL and macdHL and macdPlFound
-
-// MACD Bearish: price higher high + histogram lower high
-macdLH      = histNormLBR < ta.valuewhen(macdPhFound, histNormLBR, 1) and (rangeLower <= bsMacdPh[1] and bsMacdPh[1] <= rangeUpper)
-macdPriceHH = highLBR > ta.valuewhen(macdPhFound, highLBR, 1)
-macdBear    = macdPriceHH and macdLH and macdPhFound
-
-// ─── MACD Line Divergence Detection ─────────────────────────────────────────
-macdLineLBR = macd[lookbackRight]
 macdNormLBR = macdNorm[lookbackRight]
 
-macdLinePlFound = not na(ta.pivotlow(macdNorm,  lookbackLeft, lookbackRight))
-macdLinePhFound = not na(ta.pivothigh(macdNorm, lookbackLeft, lookbackRight))
-bsMacdLinePl    = ta.barssince(macdLinePlFound)
-bsMacdLinePh    = ta.barssince(macdLinePhFound)
-
-// MACD Line Bullish: price lower low + MACD line higher low
-macdLineHL      = macdNormLBR > ta.valuewhen(macdLinePlFound, macdNormLBR, 1) and (rangeLower <= bsMacdLinePl[1] and bsMacdLinePl[1] <= rangeUpper)
-macdLinePriceLL = lowLBR < ta.valuewhen(macdLinePlFound, lowLBR, 1)
-macdLineBull    = macdLinePriceLL and macdLineHL and macdLinePlFound
-
-// MACD Line Bearish: price higher high + MACD line lower high
-macdLineLH      = macdNormLBR < ta.valuewhen(macdLinePhFound, macdNormLBR, 1) and (rangeLower <= bsMacdLinePh[1] and bsMacdLinePh[1] <= rangeUpper)
-macdLinePriceHH = highLBR > ta.valuewhen(macdLinePhFound, highLBR, 1)
-macdLineBear    = macdLinePriceHH and macdLineLH and macdLinePhFound
-
-// ─── Potential Divergence Detection (no right-lookback confirmation, repaints) ───────────────────
-// A potential pivot fires when the current bar is the lowest/highest over the past lookbackLeft bars
-// barssince series already computed above — reused here (zero extra ta.barssince calls)
-
-// Most-recent confirmed pivot values (occurrence 0)
-rsiLastPlRsi   = ta.valuewhen(rsiPlFound, rsiLBR,        0)
-rsiLastPlLow   = ta.valuewhen(rsiPlFound, lowLBR,         0)
-rsiLastPhRsi   = ta.valuewhen(rsiPhFound, rsiLBR,        0)
-rsiLastPhHigh  = ta.valuewhen(rsiPhFound, highLBR,        0)
-histLastPlHist = ta.valuewhen(macdPlFound, histDispLBR,    0)
-histLastPlLow  = ta.valuewhen(macdPlFound, lowLBR,         0)
-histLastPhHist = ta.valuewhen(macdPhFound, histDispLBR,    0)
-histLastPhHigh = ta.valuewhen(macdPhFound, highLBR,        0)
-macdLastPlMacd = ta.valuewhen(macdLinePlFound, macdDispLBR, 0)
-macdLastPlLow  = ta.valuewhen(macdLinePlFound, lowLBR,     0)
-macdLastPhMacd = ta.valuewhen(macdLinePhFound, macdDispLBR, 0)
-macdLastPhHigh = ta.valuewhen(macdLinePhFound, highLBR,    0)
+[rsiPlFound, rsiPhFound, rsiBull, rsiBear, rsiPotBull, rsiPotBear, rsiCbsBull, rsiCbsBear, rsiKillBull, rsiKillBear, rsiPotPlOff, rsiPotPhOff, potRsiBull, potRsiBear] =
+   f_divergenceState(rsi, lookbackLeft, lookbackRight, rangeLower, rangeUpper, enforcePotZone)
+[macdPlFound, macdPhFound, macdBull, macdBear, histPotBull, histPotBear, macdCbsBull, macdCbsBear, macdKillBull, macdKillBear, histPotPlOff, histPotPhOff, potHistNormBull, potHistNormBear] =
+   f_divergenceState(histNorm, lookbackLeft, lookbackRight, rangeLower, rangeUpper, enforcePotZone)
+[macdLinePlFound, macdLinePhFound, macdLineBull, macdLineBear, macdLinePotBull, macdLinePotBear, macdLineCbsBull, macdLineCbsBear, macdLineKillBull, macdLineKillBear, macdPotPlOff, macdPotPhOff, potMacdNormBull, potMacdNormBear] =
+   f_divergenceState(macdNorm, lookbackLeft, lookbackRight, rangeLower, rangeUpper, enforcePotZone)
 
 // Start XY of each potential div line (left/older end = most recent confirmed pivot bar)
 rsiPotBullX1      = int(ta.valuewhen(rsiPlFound,      bar_index, 0)) - lookbackRight
@@ -312,49 +177,6 @@ macdLinePotBullX1 = int(ta.valuewhen(macdLinePlFound, bar_index, 0)) - lookbackR
 macdLinePotBullY1 = ta.valuewhen(macdLinePlFound, macdDispLBR,  0)
 macdLinePotBearX1 = int(ta.valuewhen(macdLinePhFound, bar_index, 0)) - lookbackRight
 macdLinePotBearY1 = ta.valuewhen(macdLinePhFound, macdDispLBR,  0)
-
-// Potential divergence uses the candidate pivot found inside the left-lookback window, including the current bar.
-// RSI uses raw 0-100; hist and MACD use normalized values to match the visual line endpoints.
-rsiPotPlOff   = f_barsAgo(ta.lowestbars(rsi,      lookbackLeft + 1))
-rsiPotPhOff   = f_barsAgo(ta.highestbars(rsi,     lookbackLeft + 1))
-histPotPlOff  = f_barsAgo(ta.lowestbars(histNorm, lookbackLeft + 1))
-histPotPhOff  = f_barsAgo(ta.highestbars(histNorm, lookbackLeft + 1))
-macdPotPlOff  = f_barsAgo(ta.lowestbars(macdNorm, lookbackLeft + 1))
-macdPotPhOff  = f_barsAgo(ta.highestbars(macdNorm, lookbackLeft + 1))
-pricePotPlOff = f_barsAgo(ta.lowestbars(low,      lookbackLeft + 1))
-pricePotPhOff = f_barsAgo(ta.highestbars(high,    lookbackLeft + 1))
-
-rsiPotPl   = rsiPotPlOff == pricePotPlOff
-rsiPotPh   = rsiPotPhOff == pricePotPhOff
-histPotPl  = histPotPlOff == pricePotPlOff
-histPotPh  = histPotPhOff == pricePotPhOff
-macdPotPl  = macdPotPlOff == pricePotPlOff
-macdPotPh  = macdPotPhOff == pricePotPhOff
-
-potRsiBull      = rsi[rsiPotPlOff]
-potRsiBear      = rsi[rsiPotPhOff]
-potHistNormBull = histNorm[histPotPlOff]
-potHistNormBear = histNorm[histPotPhOff]
-potMacdNormBull = macdNorm[macdPotPlOff]
-potMacdNormBear = macdNorm[macdPotPhOff]
-potLow          = low[pricePotPlOff]
-potHigh         = high[pricePotPhOff]
-potBsRsiPl      = bsRsiPl - rsiPotPlOff
-potBsRsiPh      = bsRsiPh - rsiPotPhOff
-potBsMacdPl     = bsMacdPl - histPotPlOff
-potBsMacdPh     = bsMacdPh - histPotPhOff
-potBsMacdLinePl = bsMacdLinePl - macdPotPlOff
-potBsMacdLinePh = bsMacdLinePh - macdPotPhOff
-
-// Bull: oscillator higher low — also require it hasn't broken above last confirmed high (still in divergence zone)
-// Bear: oscillator lower high — also require it hasn't broken below last confirmed low (still in divergence zone)
-// hist and MACD comparisons use normalized values (consistent with visual line endpoints)
-rsiPotBull      = f_isBullPotValid(rsiPotPl, true, potRsiBull, lastBullOsc=rsiLastPlRsi, lastBullPrice=rsiLastPlLow, oppositeBearOsc=rsiLastPhRsi, priceValue=potLow, barsSinceBull=potBsRsiPl, rngLow=rangeLower, rngHigh=rangeUpper, enforceZone=enforcePotZone)
-rsiPotBear      = f_isBearPotValid(rsiPotPh, true, potRsiBear, lastBearOsc=rsiLastPhRsi, lastBearPrice=rsiLastPhHigh, oppositeBullOsc=rsiLastPlRsi, priceValue=potHigh, barsSinceBear=potBsRsiPh, rngLow=rangeLower, rngHigh=rangeUpper, enforceZone=enforcePotZone)
-histPotBull     = f_isBullPotValid(histPotPl, true, potHistNormBull, lastBullOsc=histLastPlHist, lastBullPrice=histLastPlLow, oppositeBearOsc=histLastPhHist, priceValue=potLow, barsSinceBull=potBsMacdPl, rngLow=rangeLower, rngHigh=rangeUpper, enforceZone=enforcePotZone)
-histPotBear     = f_isBearPotValid(histPotPh, true, potHistNormBear, lastBearOsc=histLastPhHist, lastBearPrice=histLastPhHigh, oppositeBullOsc=histLastPlHist, priceValue=potHigh, barsSinceBear=potBsMacdPh, rngLow=rangeLower, rngHigh=rangeUpper, enforceZone=enforcePotZone)
-macdLinePotBull = f_isBullPotValid(macdPotPl, true, potMacdNormBull, lastBullOsc=macdLastPlMacd, lastBullPrice=macdLastPlLow, oppositeBearOsc=macdLastPhMacd, priceValue=potLow, barsSinceBull=potBsMacdLinePl, rngLow=rangeLower, rngHigh=rangeUpper, enforceZone=enforcePotZone)
-macdLinePotBear = f_isBearPotValid(macdPotPh, true, potMacdNormBear, lastBearOsc=macdLastPhMacd, lastBearPrice=macdLastPhHigh, oppositeBullOsc=macdLastPlMacd, priceValue=potHigh, barsSinceBear=potBsMacdLinePh, rngLow=rangeLower, rngHigh=rangeUpper, enforceZone=enforcePotZone)
 
 // ─── Divergence Background Highlight ────────────────────────────────────────
 noneColor    = color.new(color.white, 100)
@@ -644,15 +466,15 @@ bgcolor(macdCrossUp   ? color.new(color.green, 90) : na, title="MACD Cross Up BG
 bgcolor(macdCrossDown ? color.new(color.red,   90) : na, title="MACD Cross Down BG")
 
 // ─── MTF Potential Divergence — Security Calls ───────────────────────────────
-[r1m_rb,  r1m_rB,  r1m_hb,  r1m_hB,  r1m_mb,  r1m_mB,  r1m_crb, r1m_crB, r1m_chb, r1m_chB, r1m_cmb, r1m_cmB, r1m_krb, r1m_krB, r1m_khb, r1m_khB, r1m_kmb, r1m_kmB]  =
+[r1m_rb,  r1m_rB,  r1m_hb,  r1m_hB,  r1m_mb,  r1m_mB,  r1m_crb, r1m_crB, r1m_chb, r1m_chB, r1m_cmb, r1m_cmB, r1m_krb, r1m_krB, r1m_khb, r1m_khB, r1m_kmb, r1m_kmB, r1m_cu, r1m_cd]  =
      request.security(syminfo.tickerid, "1",   f_potDiv(rsiLengthInput, fastLenInput, slowLenInput, sigLenInput, lookbackLeft, lookbackRight, rangeLower, rangeUpper))
-[r5m_rb,  r5m_rB,  r5m_hb,  r5m_hB,  r5m_mb,  r5m_mB,  r5m_crb, r5m_crB, r5m_chb, r5m_chB, r5m_cmb, r5m_cmB, r5m_krb, r5m_krB, r5m_khb, r5m_khB, r5m_kmb, r5m_kmB]  =
+[r5m_rb,  r5m_rB,  r5m_hb,  r5m_hB,  r5m_mb,  r5m_mB,  r5m_crb, r5m_crB, r5m_chb, r5m_chB, r5m_cmb, r5m_cmB, r5m_krb, r5m_krB, r5m_khb, r5m_khB, r5m_kmb, r5m_kmB, r5m_cu, r5m_cd]  =
      request.security(syminfo.tickerid, "5",   f_potDiv(rsiLengthInput, fastLenInput, slowLenInput, sigLenInput, lookbackLeft, lookbackRight, rangeLower, rangeUpper))
-[r15m_rb, r15m_rB, r15m_hb, r15m_hB, r15m_mb, r15m_mB, r15m_crb, r15m_crB, r15m_chb, r15m_chB, r15m_cmb, r15m_cmB, r15m_krb, r15m_krB, r15m_khb, r15m_khB, r15m_kmb, r15m_kmB] =
+[r15m_rb, r15m_rB, r15m_hb, r15m_hB, r15m_mb, r15m_mB, r15m_crb, r15m_crB, r15m_chb, r15m_chB, r15m_cmb, r15m_cmB, r15m_krb, r15m_krB, r15m_khb, r15m_khB, r15m_kmb, r15m_kmB, r15m_cu, r15m_cd] =
      request.security(syminfo.tickerid, "15",  f_potDiv(rsiLengthInput, fastLenInput, slowLenInput, sigLenInput, lookbackLeft, lookbackRight, rangeLower, rangeUpper))
-[r1h_rb,  r1h_rB,  r1h_hb,  r1h_hB,  r1h_mb,  r1h_mB,  r1h_crb, r1h_crB, r1h_chb, r1h_chB, r1h_cmb, r1h_cmB, r1h_krb, r1h_krB, r1h_khb, r1h_khB, r1h_kmb, r1h_kmB]  =
+[r1h_rb,  r1h_rB,  r1h_hb,  r1h_hB,  r1h_mb,  r1h_mB,  r1h_crb, r1h_crB, r1h_chb, r1h_chB, r1h_cmb, r1h_cmB, r1h_krb, r1h_krB, r1h_khb, r1h_khB, r1h_kmb, r1h_kmB, r1h_cu, r1h_cd]  =
      request.security(syminfo.tickerid, "60",  f_potDiv(rsiLengthInput, fastLenInput, slowLenInput, sigLenInput, lookbackLeft, lookbackRight, rangeLower, rangeUpper))
-[r4h_rb,  r4h_rB,  r4h_hb,  r4h_hB,  r4h_mb,  r4h_mB,  r4h_crb, r4h_crB, r4h_chb, r4h_chB, r4h_cmb, r4h_cmB, r4h_krb, r4h_krB, r4h_khb, r4h_khB, r4h_kmb, r4h_kmB]  =
+[r4h_rb,  r4h_rB,  r4h_hb,  r4h_hB,  r4h_mb,  r4h_mB,  r4h_crb, r4h_crB, r4h_chb, r4h_chB, r4h_cmb, r4h_cmB, r4h_krb, r4h_krB, r4h_khb, r4h_khB, r4h_kmb, r4h_kmB, r4h_cu, r4h_cd]  =
      request.security(syminfo.tickerid, "240", f_potDiv(rsiLengthInput, fastLenInput, slowLenInput, sigLenInput, lookbackLeft, lookbackRight, rangeLower, rangeUpper))
 
 // ─── MTF Table — feed style, only active signals ─────────────────────────────
@@ -678,7 +500,7 @@ f_confStr(crb, crB, chb, chB, cmb, cmB, krb, krB, khb, khB, kmb, kmB) =>
     kHasBull = false
     kHasBear = false
     // RSI bull
-    if not na(crb) and crb <= rangeUpper
+    if not na(crb) and crb <= tableMaxBars
         if krb
             array.push(klbls, "R▲")
             array.push(kvals, int(crb))
@@ -688,7 +510,7 @@ f_confStr(crb, crB, chb, chB, cmb, cmB, krb, krB, khb, khB, kmb, kmB) =>
             array.push(cvals, int(crb))
             cHasBull := true
     // RSI bear
-    if not na(crB) and crB <= rangeUpper
+    if not na(crB) and crB <= tableMaxBars
         if krB
             array.push(klbls, "R▼")
             array.push(kvals, int(crB))
@@ -698,7 +520,7 @@ f_confStr(crb, crB, chb, chB, cmb, cmB, krb, krB, khb, khB, kmb, kmB) =>
             array.push(cvals, int(crB))
             cHasBear := true
     // Hist bull
-    if not na(chb) and chb <= rangeUpper
+    if not na(chb) and chb <= tableMaxBars
         if khb
             array.push(klbls, "H▲")
             array.push(kvals, int(chb))
@@ -708,7 +530,7 @@ f_confStr(crb, crB, chb, chB, cmb, cmB, krb, krB, khb, khB, kmb, kmB) =>
             array.push(cvals, int(chb))
             cHasBull := true
     // Hist bear
-    if not na(chB) and chB <= rangeUpper
+    if not na(chB) and chB <= tableMaxBars
         if khB
             array.push(klbls, "H▼")
             array.push(kvals, int(chB))
@@ -718,7 +540,7 @@ f_confStr(crb, crB, chb, chB, cmb, cmB, krb, krB, khb, khB, kmb, kmB) =>
             array.push(cvals, int(chB))
             cHasBear := true
     // MACD bull
-    if not na(cmb) and cmb <= rangeUpper
+    if not na(cmb) and cmb <= tableMaxBars
         if kmb
             array.push(klbls, "M▲")
             array.push(kvals, int(cmb))
@@ -728,7 +550,7 @@ f_confStr(crb, crB, chb, chB, cmb, cmB, krb, krB, khb, khB, kmb, kmB) =>
             array.push(cvals, int(cmb))
             cHasBull := true
     // MACD bear
-    if not na(cmB) and cmB <= rangeUpper
+    if not na(cmB) and cmB <= tableMaxBars
         if kmB
             array.push(klbls, "M▼")
             array.push(kvals, int(cmB))
@@ -874,13 +696,3 @@ if barstate.islast
             table.cell(mtfTable, 1, i + 1, array.get(activeSigs,    i), bgcolor=array.get(activeBgs,     i),    text_color=mtfTxtCl, text_size=size.small)
             table.cell(mtfTable, 2, i + 1, array.get(activeConf,    i), bgcolor=array.get(activeConfBgs, i),    text_color=mtfTxtCl, text_size=size.small)
             table.cell(mtfTable, 3, i + 1, array.get(activeKill,    i), bgcolor=array.get(activeKillBgs, i),    text_color=mtfTxtCl, text_size=size.small)
-
-// ─── Alerts ──────────────────────────────────────────────────────────────────
-alertcondition(rsiBull,       "RSI Bullish Divergence",       "RSI: Bullish Divergence detected")
-alertcondition(rsiBear,       "RSI Bearish Divergence",       "RSI: Bearish Divergence detected")
-alertcondition(macdBull,      "MACD Hist Bullish Divergence", "MACD Histogram: Bullish Divergence detected")
-alertcondition(macdBear,      "MACD Hist Bearish Divergence", "MACD Histogram: Bearish Divergence detected")
-alertcondition(macdLineBull,  "MACD Line Bullish Divergence", "MACD Line: Bullish Divergence detected")
-alertcondition(macdLineBear,  "MACD Line Bearish Divergence", "MACD Line: Bearish Divergence detected")
-alertcondition(rsiBull  or macdBull  or macdLineBull, "Any Bullish Divergence", "Bullish Divergence detected (RSI, MACD Hist, or MACD Line)")
-alertcondition(rsiBear  or macdBear  or macdLineBear, "Any Bearish Divergence", "Bearish Divergence detected (RSI, MACD Hist, or MACD Line)")
