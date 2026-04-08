@@ -1,0 +1,436 @@
+//@version=6
+indicator("Swing H/L Volume Profile", overlay=true,
+     max_boxes_count=500, max_lines_count=100,
+     max_labels_count=20, max_bars_back=5000)
+
+// ── Constants ────────────────────────────────────────────────────────────────
+int MAX_SEG    = 10
+int MAX_ROWS   = 48   // Up/Down mode caps at 24 internally to stay under 500 boxes
+int MAX_BARS   = 300  // max raw bars stored per segment for volume recompute
+
+// ── Inputs: Swing Settings ───────────────────────────────────────────────────
+pivotLeft  = input.int(5,  "Pivot Left Bars",  minval=1, maxval=20, group="Swing Settings")
+pivotRight = input.int(5,  "Pivot Right Bars", minval=1, maxval=20, group="Swing Settings")
+
+// ── Inputs: Volume Profile ───────────────────────────────────────────────────
+maxSegments  = input.int(3,  "Max Segments to Show", minval=1, maxval=10,   group="Volume Profile")
+rowSizeMode  = input.string("By Row Count", "Row Size Mode",
+                 options=["By Ticks", "By Row Count"],                      group="Volume Profile")
+tickPerRow   = input.float(0.0, "Tick Size Per Row (0=auto)",  minval=0.0,  group="Volume Profile",
+                 tooltip="Set to 0 to use swing range / rows automatically")
+numRows      = input.int(24,  "Number of Rows", minval=2, maxval=48,        group="Volume Profile")
+profileWidth = input.int(10,  "Profile Width (bars)", minval=1, maxval=200, group="Volume Profile")
+volType      = input.string("Delta", "Volume Type",
+                 options=["Delta", "Total", "Up/Down"],                     group="Volume Profile")
+
+// ── Inputs: Colors ───────────────────────────────────────────────────────────
+vaColor      = input.color(color.new(#2196F3, 60), "Value Area Color",      group="Colors")
+outsideColor = input.color(color.new(#607D8B, 70), "Outside Area Color",    group="Colors")
+pocColor     = input.color(color.new(#FF9800, 20), "POC Color",             group="Colors")
+upVolColor   = input.color(color.new(#4CAF50, 40), "Up Volume Color",       group="Colors")
+dnVolColor   = input.color(color.new(#F44336, 40), "Down Volume Color",     group="Colors")
+deltaPosCss  = input.color(color.new(#4CAF50, 30), "Delta Positive Color",  group="Colors")
+deltaNegCss  = input.color(color.new(#F44336, 30), "Delta Negative Color",  group="Colors")
+
+// ── Inputs: Value Area ───────────────────────────────────────────────────────
+vaPct    = input.float(70.0, "Value Area %", minval=1.0, maxval=100.0,      group="Value Area")
+showVAHL = input.bool(true,  "Show VAH/VAL Lines",                          group="Value Area")
+
+// ── Segment Metadata ─────────────────────────────────────────────────────────
+var seg_start    = array.new_int(MAX_SEG, -1)
+var seg_end      = array.new_int(MAX_SEG, -1)   // -1 = segment still open
+var seg_low      = array.new_float(MAX_SEG, na)
+var seg_high     = array.new_float(MAX_SEG, na)
+var seg_type     = array.new_int(MAX_SEG, 0)
+var seg_rowcount = array.new_int(MAX_SEG, 0)
+var seg_rowsize  = array.new_float(MAX_SEG, 0.)
+var seg_active   = array.new_bool(MAX_SEG, false)
+var seg_count    = array.new_int(1, 0)
+var pending_idx  = array.new_int(1, -1)
+
+// ── Raw bar storage per segment (flat: seg_idx * MAX_BARS + bar_pos) ─────────
+// Stores raw OHLCV so we can recompute row buckets using final seg_lo/seg_hi
+var raw_high  = array.new_float(MAX_SEG * MAX_BARS, 0.)
+var raw_low   = array.new_float(MAX_SEG * MAX_BARS, 0.)
+var raw_upvol = array.new_float(MAX_SEG * MAX_BARS, 0.)
+var raw_dnvol = array.new_float(MAX_SEG * MAX_BARS, 0.)
+var raw_count = array.new_int(MAX_SEG, 0)   // how many bars stored per segment
+
+// ── Volume Data (flat 2D: seg_idx * MAX_ROWS + row_idx) ─────────────────────
+// Computed fresh on barstate.islast from raw data
+var vol_total = array.new_float(MAX_SEG * MAX_ROWS, 0.)
+var vol_up    = array.new_float(MAX_SEG * MAX_ROWS, 0.)
+var vol_down  = array.new_float(MAX_SEG * MAX_ROWS, 0.)
+
+// ── Drawing Objects ──────────────────────────────────────────────────────────
+var profile_boxes   = array.new_box(MAX_SEG * MAX_ROWS)
+var profile_boxes_b = array.new_box(MAX_SEG * MAX_ROWS)
+var vah_lines = array.new_line(MAX_SEG)
+var val_lines = array.new_line(MAX_SEG)
+
+// ── Pivot & Segment State ────────────────────────────────────────────────────
+var int   last_sh_bar     = na
+var float last_sh_price   = na
+var int   last_sl_bar     = na
+var float last_sl_price   = na
+var int   last_pivot_type = 0
+
+// ── First Bar: Pre-allocate all drawing objects with valid coords ─────────────
+if barstate.isfirst
+    for i = 0 to MAX_SEG * MAX_ROWS - 1
+        array.set(profile_boxes,   i, box.new(bar_index, high, bar_index + 1, low, border_color=na, bgcolor=na))
+        array.set(profile_boxes_b, i, box.new(bar_index, high, bar_index + 1, low, border_color=na, bgcolor=na))
+    for i = 0 to MAX_SEG - 1
+        array.set(vah_lines, i, line.new(bar_index, high, bar_index + 1, high, color=na))
+        array.set(val_lines, i, line.new(bar_index, low,  bar_index + 1, low,  color=na))
+
+// ── Helper: compute row params for a segment ─────────────────────────────────
+f_rowParams(float seg_lo, float seg_hi) =>
+    float seg_range = math.max(seg_hi - seg_lo, syminfo.mintick)
+    int   nRows = numRows
+    float rowSz = seg_range / nRows
+    if rowSizeMode == "By Ticks"
+        float tick = tickPerRow > 0 ? tickPerRow : seg_range / numRows
+        rowSz := tick
+        nRows := math.min(int(math.ceil(seg_range / rowSz)), MAX_ROWS)
+        nRows := math.max(nRows, 2)
+        rowSz := seg_range / nRows
+    else
+        nRows := math.min(numRows, MAX_ROWS)
+        rowSz := seg_range / nRows
+    [nRows, rowSz]
+
+// ── Helper: evict oldest segment (shift all arrays left by 1) ────────────────
+f_evict() =>
+    for i = 0 to MAX_SEG - 2
+        array.set(seg_start,    i, array.get(seg_start,    i + 1))
+        array.set(seg_end,      i, array.get(seg_end,      i + 1))
+        array.set(seg_low,      i, array.get(seg_low,      i + 1))
+        array.set(seg_high,     i, array.get(seg_high,     i + 1))
+        array.set(seg_type,     i, array.get(seg_type,     i + 1))
+        array.set(seg_rowcount, i, array.get(seg_rowcount, i + 1))
+        array.set(seg_rowsize,  i, array.get(seg_rowsize,  i + 1))
+        array.set(seg_active,   i, array.get(seg_active,   i + 1))
+        array.set(raw_count,    i, array.get(raw_count,    i + 1))
+        for r = 0 to MAX_ROWS - 1
+            int src = (i + 1) * MAX_ROWS + r
+            int dst = i       * MAX_ROWS + r
+            array.set(vol_total, dst, array.get(vol_total, src))
+            array.set(vol_up,    dst, array.get(vol_up,    src))
+            array.set(vol_down,  dst, array.get(vol_down,  src))
+        for b = 0 to MAX_BARS - 1
+            int src = (i + 1) * MAX_BARS + b
+            int dst = i       * MAX_BARS + b
+            array.set(raw_high,  dst, array.get(raw_high,  src))
+            array.set(raw_low,   dst, array.get(raw_low,   src))
+            array.set(raw_upvol, dst, array.get(raw_upvol, src))
+            array.set(raw_dnvol, dst, array.get(raw_dnvol, src))
+    int last_i = MAX_SEG - 1
+    array.set(seg_start,  last_i, -1)
+    array.set(seg_end,    last_i, -1)
+    array.set(seg_active, last_i, false)
+    array.set(seg_low,    last_i, na)
+    array.set(seg_high,   last_i, na)
+    array.set(raw_count,  last_i, 0)
+    for r = 0 to MAX_ROWS - 1
+        int flat = last_i * MAX_ROWS + r
+        array.set(vol_total, flat, 0.)
+        array.set(vol_up,    flat, 0.)
+        array.set(vol_down,  flat, 0.)
+    for b = 0 to MAX_BARS - 1
+        int flat = last_i * MAX_BARS + b
+        array.set(raw_high,  flat, 0.)
+        array.set(raw_low,   flat, 0.)
+        array.set(raw_upvol, flat, 0.)
+        array.set(raw_dnvol, flat, 0.)
+    int cur = array.get(pending_idx, 0)
+    array.set(pending_idx, 0, cur > 0 ? cur - 1 : -1)
+
+// ── Helper: finalize the current open segment ─────────────────────────────────
+f_finalize(int end_bar) =>
+    int si = array.get(pending_idx, 0)
+    if si >= 0
+        array.set(seg_end, si, end_bar)
+        float slo = array.get(seg_low,  si)
+        float shi = array.get(seg_high, si)
+        if not na(slo) and not na(shi)
+            [nR, rSz] = f_rowParams(slo, shi)
+            array.set(seg_rowcount, si, nR)
+            array.set(seg_rowsize,  si, rSz)
+        array.set(pending_idx, 0, -1)
+
+// ── Helper: open a new segment ────────────────────────────────────────────────
+f_open(int pivot_bar, float pivot_price, int pivot_type) =>
+    int n = array.get(seg_count, 0)
+    if n >= MAX_SEG
+        f_evict()
+        n := MAX_SEG - 1
+        array.set(seg_count, 0, n)
+    int si = n
+    array.set(seg_start,    si, pivot_bar)
+    array.set(seg_end,      si, -1)
+    array.set(seg_low,      si, pivot_price)
+    array.set(seg_high,     si, pivot_price)
+    array.set(seg_type,     si, pivot_type)
+    array.set(seg_rowcount, si, 0)
+    array.set(seg_rowsize,  si, 0.)
+    array.set(seg_active,   si, true)
+    array.set(raw_count,    si, 0)
+    for r = 0 to MAX_ROWS - 1
+        int flat = si * MAX_ROWS + r
+        array.set(vol_total, flat, 0.)
+        array.set(vol_up,    flat, 0.)
+        array.set(vol_down,  flat, 0.)
+    for b = 0 to MAX_BARS - 1
+        int flat = si * MAX_BARS + b
+        array.set(raw_high,  flat, 0.)
+        array.set(raw_low,   flat, 0.)
+        array.set(raw_upvol, flat, 0.)
+        array.set(raw_dnvol, flat, 0.)
+    array.set(seg_count, 0, n + 1)
+    array.set(pending_idx, 0, si)
+
+// ── Pivot Detection ───────────────────────────────────────────────────────────
+float ph = ta.pivothigh(high, pivotLeft, pivotRight)
+float pl = ta.pivotlow(low,   pivotLeft, pivotRight)
+int   ph_bar = bar_index - pivotRight
+int   pl_bar = bar_index - pivotRight
+
+if not na(ph)
+    if last_pivot_type == 1
+        if ph > last_sh_price
+            last_sh_bar   := ph_bar
+            last_sh_price := ph
+    else
+        f_finalize(ph_bar)
+        f_open(ph_bar, ph, 1)
+        last_sh_bar     := ph_bar
+        last_sh_price   := ph
+        last_pivot_type := 1
+
+if not na(pl)
+    if last_pivot_type == -1
+        if pl < last_sl_price
+            last_sl_bar   := pl_bar
+            last_sl_price := pl
+    else
+        f_finalize(pl_bar)
+        f_open(pl_bar, pl, -1)
+        last_sl_bar     := pl_bar
+        last_sl_price   := pl
+        last_pivot_type := -1
+
+// ── Raw Bar Accumulation (store OHLCV for recompute on last bar) ──────────────
+int psi = array.get(pending_idx, 0)
+if psi >= 0
+    // Update segment price bounds
+    float slo = array.get(seg_low,  psi)
+    float shi = array.get(seg_high, psi)
+    array.set(seg_low,  psi, na(slo) ? low  : math.min(slo, low))
+    array.set(seg_high, psi, na(shi) ? high : math.max(shi, high))
+
+    // Store raw bar if capacity allows
+    int bc = array.get(raw_count, psi)
+    if bc < MAX_BARS
+        float bar_vol = nz(volume, 0.)
+        float bar_up  = close >= open ? bar_vol : 0.
+        float bar_dn  = close <  open ? bar_vol : 0.
+        int   flat    = psi * MAX_BARS + bc
+        array.set(raw_high,  flat, high)
+        array.set(raw_low,   flat, low)
+        array.set(raw_upvol, flat, bar_up)
+        array.set(raw_dnvol, flat, bar_dn)
+        array.set(raw_count, psi, bc + 1)
+
+// ── Drawing (last bar only) ───────────────────────────────────────────────────
+if barstate.islast
+    // Hide all boxes and lines
+    for i = 0 to MAX_SEG * MAX_ROWS - 1
+        box.set_bgcolor(array.get(profile_boxes,   i), na)
+        box.set_border_color(array.get(profile_boxes,   i), na)
+        box.set_bgcolor(array.get(profile_boxes_b, i), na)
+        box.set_border_color(array.get(profile_boxes_b, i), na)
+    for i = 0 to MAX_SEG - 1
+        line.set_color(array.get(vah_lines, i), na)
+        line.set_color(array.get(val_lines, i), na)
+
+    int total_segs = array.get(seg_count, 0)
+    int draw_from  = math.max(0, total_segs - maxSegments)
+
+    for si = draw_from to total_segs - 1
+        if not array.get(seg_active, si)
+            continue
+
+        float seg_lo = array.get(seg_low,  si)
+        float seg_hi = array.get(seg_high, si)
+
+        if na(seg_lo) or na(seg_hi) or seg_hi <= seg_lo
+            continue
+
+        // Use finalized row params; recompute for open segment
+        int   nR  = array.get(seg_rowcount, si)
+        float rSz = array.get(seg_rowsize,  si)
+        if nR < 2
+            [_nR, _rSz] = f_rowParams(seg_lo, seg_hi)
+            nR  := _nR
+            rSz := _rSz
+
+        // Cap for Up/Down split (2 boxes/row, stay under 500 total)
+        if volType == "Up/Down"
+            nR  := math.min(nR, 24)
+            rSz := (seg_hi - seg_lo) / nR
+
+        // ── Recompute volume from raw bars using final bounds ─────────────
+        // Zero out the row arrays first
+        for r = 0 to nR - 1
+            int flat = si * MAX_ROWS + r
+            array.set(vol_total, flat, 0.)
+            array.set(vol_up,    flat, 0.)
+            array.set(vol_down,  flat, 0.)
+
+        int bc = array.get(raw_count, si)
+        for b = 0 to bc - 1
+            int   bflat   = si * MAX_BARS + b
+            float bh      = array.get(raw_high,  bflat)
+            float bl      = array.get(raw_low,   bflat)
+            float bup     = array.get(raw_upvol, bflat)
+            float bdn     = array.get(raw_dnvol, bflat)
+            float btotal  = bup + bdn
+
+            int row_bot = math.max(0, math.min(int(math.floor((bl - seg_lo) / rSz)), nR - 1))
+            int row_top = math.max(0, math.min(int(math.floor((bh - seg_lo) / rSz)), nR - 1))
+            int rows_spanned = math.max(1, row_top - row_bot + 1)
+
+            float vpr = btotal / rows_spanned
+            float upr = bup    / rows_spanned
+            float dpr = bdn    / rows_spanned
+
+            for r = row_bot to row_top
+                int flat = si * MAX_ROWS + r
+                array.set(vol_total, flat, array.get(vol_total, flat) + vpr)
+                array.set(vol_up,    flat, array.get(vol_up,    flat) + upr)
+                array.set(vol_down,  flat, array.get(vol_down,  flat) + dpr)
+
+        int prof_left = array.get(seg_start, si)
+
+        // Gather max & total volume across rows
+        float maxVol   = 0.
+        float totalVol = 0.
+        for r = 0 to nR - 1
+            float rv = array.get(vol_total, si * MAX_ROWS + r)
+            totalVol += rv
+            maxVol   := math.max(maxVol, rv)
+
+        if maxVol <= 0.
+            continue
+
+        // ── POC ──────────────────────────────────────────────────────────
+        int   pocRow = 0
+        float pocVol = 0.
+        for r = 0 to nR - 1
+            float rv = array.get(vol_total, si * MAX_ROWS + r)
+            if rv > pocVol
+                pocVol := rv
+                pocRow := r
+
+        // ── Value Area expansion from POC outward ─────────────────────────
+        float vaVol  = pocVol
+        int   vaLow  = pocRow
+        int   vaHigh = pocRow
+        int   below  = pocRow - 1
+        int   above  = pocRow + 1
+        float target = totalVol * vaPct / 100.0
+
+        while vaVol < target and (below >= 0 or above <= nR - 1)
+            float vb = below >= 0    ? array.get(vol_total, si * MAX_ROWS + below) : -1.
+            float va = above <= nR-1 ? array.get(vol_total, si * MAX_ROWS + above) : -1.
+            if vb >= va
+                vaVol  += vb
+                vaLow  := below
+                below  -= 1
+            else
+                vaVol  += va
+                vaHigh := above
+                above  += 1
+
+        float val_price = seg_lo + vaLow        * rSz
+        float vah_price = seg_lo + (vaHigh + 1) * rSz
+
+        // ── Draw each row ──────────────────────────────────────────────────
+        for r = 0 to nR - 1
+            int   flat      = si * MAX_ROWS + r
+            float row_total = array.get(vol_total, flat)
+            float row_up    = array.get(vol_up,    flat)
+            float row_down  = array.get(vol_down,  flat)
+            float row_delta = row_up - row_down
+
+            float row_bot_price = seg_lo + r       * rSz
+            float row_top_price = seg_lo + (r + 1) * rSz
+
+            bool is_poc = r == pocRow
+            bool in_va  = r >= vaLow and r <= vaHigh
+
+            box bx  = array.get(profile_boxes,   flat)
+            box bx2 = array.get(profile_boxes_b, flat)
+
+            if volType == "Delta"
+                float vol_w   = math.abs(row_delta)
+                int   bw      = math.max(1, int(math.round(float(profileWidth) * vol_w / maxVol)))
+                color bx_col  = is_poc ? pocColor : (row_delta >= 0 ? deltaPosCss : deltaNegCss)
+                box.set_left(bx,         prof_left)
+                box.set_top(bx,          row_top_price)
+                box.set_right(bx,        prof_left + bw)
+                box.set_bottom(bx,       row_bot_price)
+                box.set_bgcolor(bx,      bx_col)
+                box.set_border_color(bx, na)
+
+            else if volType == "Total"
+                int   bw     = math.max(1, int(math.round(float(profileWidth) * row_total / maxVol)))
+                color bx_col = is_poc ? pocColor : (in_va ? vaColor : outsideColor)
+                box.set_left(bx,         prof_left)
+                box.set_top(bx,          row_top_price)
+                box.set_right(bx,        prof_left + bw)
+                box.set_bottom(bx,       row_bot_price)
+                box.set_bgcolor(bx,      bx_col)
+                box.set_border_color(bx, na)
+
+            else  // Up/Down
+                int bw  = math.max(1, int(math.round(float(profileWidth) * row_total / maxVol)))
+                int upw = row_total > 0 ? math.max(0, int(math.round(float(bw) * row_up / row_total))) : 0
+                int dnw = bw - upw
+
+                color up_col = is_poc ? pocColor : upVolColor
+                color dn_col = is_poc ? pocColor : dnVolColor
+
+                box.set_left(bx,          prof_left)
+                box.set_top(bx,           row_top_price)
+                box.set_right(bx,         prof_left + upw)
+                box.set_bottom(bx,        row_bot_price)
+                box.set_bgcolor(bx,       up_col)
+                box.set_border_color(bx,  na)
+
+                box.set_left(bx2,         prof_left + upw)
+                box.set_top(bx2,          row_top_price)
+                box.set_right(bx2,        prof_left + upw + dnw)
+                box.set_bottom(bx2,       row_bot_price)
+                box.set_bgcolor(bx2,      dn_col)
+                box.set_border_color(bx2, na)
+
+        // ── VAH/VAL lines ─────────────────────────────────────────────────
+        if showVAHL
+            int seg_end_bar = array.get(seg_end, si)
+            int line_right  = seg_end_bar < 0 ? bar_index : seg_end_bar + profileWidth
+
+            line vah_ln = array.get(vah_lines, si)
+            line.set_xy1(vah_ln, prof_left, vah_price)
+            line.set_xy2(vah_ln, line_right, vah_price)
+            line.set_color(vah_ln, vaColor)
+            line.set_style(vah_ln, line.style_dotted)
+            line.set_width(vah_ln, 1)
+
+            line val_ln = array.get(val_lines, si)
+            line.set_xy1(val_ln, prof_left, val_price)
+            line.set_xy2(val_ln, line_right, val_price)
+            line.set_color(val_ln, vaColor)
+            line.set_style(val_ln, line.style_dotted)
+            line.set_width(val_ln, 1)

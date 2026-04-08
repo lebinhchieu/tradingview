@@ -554,6 +554,9 @@ if show_fvg
 show_trend_table = input(true, 'Show Trend Table'
   , group = 'Trend Table')
 
+colorThresh1_t = input.int(5,  'Color Darken Threshold 1', minval=1, group='Trend Table', tooltip='Bars since signal: up to this value uses brightest color')
+colorThresh2_t = input.int(10, 'Color Darken Threshold 2', minval=1, group='Trend Table', tooltip='Bars since signal: up to this value uses medium color; above uses darkest')
+
 trend_table_pos = input.string('Bottom Left', 'Position'
   , options = ['Bottom Right', 'Bottom Left', 'Top Right', 'Top Left']
   , group = 'Trend Table')
@@ -569,19 +572,24 @@ show_tf_1w  = input(true, '1w',  inline = 'tf_row2', group = 'Trend Table')
 //-----------------------------------------------------------------------------{
 // Colors
 //-----------------------------------------------------------------------------{
-color TBL_GREEN   = color.new(#089981, 0)
-color TBL_RED     = color.new(#f23645, 0)
 color TBL_NEUTRAL = color.new(#434651, 0)
 color TBL_HEADER  = color.new(#1e222d, 0)
 color TBL_TEXT    = color.white
 
-//-----------------------------------------------------------------------------{
-// Helper: RSI cell background color
-//-----------------------------------------------------------------------------{
-rsi_cell_color(rsi_val) =>
-    rsi_val >= 70 ? TBL_RED
-      : rsi_val <= 30 ? TBL_GREEN
-      : TBL_NEUTRAL
+// Age-based color: brightest when recent, darkest when old
+// Green shades: #089981 → #067a67 → #045a4d
+// Red   shades: #f23645 → #c22a37 → #921e29
+tf_age_color(isBull, bars) =>
+    color result = na
+    if isBull
+        result := na(bars) or bars <= colorThresh1_t ? #089981
+               : bars <= colorThresh2_t              ? #067a67
+               :                                       #045a4d
+    else
+        result := na(bars) or bars <= colorThresh1_t ? #f23645
+               : bars <= colorThresh2_t              ? #c22a37
+               :                                       #921e29
+    result
 
 // Format bar count suffix
 bc(v) => na(v) ? "" : str.tostring(int(v))
@@ -633,13 +641,13 @@ set_tf_row(row, tf_lbl, rsi_val, abv_ma20, abv_ma200, macd_bull, rsi_bull, bars_
     table.cell(trendTable, 0, row, tf_lbl
       , text_color = TBL_TEXT, text_size = size.small, bgcolor = TBL_HEADER)
     table.cell(trendTable, 1, row, (abv_ma20 ? "▲" : "▼") + bc(bars_ma20)
-      , text_color = TBL_TEXT, text_size = size.small, bgcolor = abv_ma20 ? TBL_GREEN : TBL_RED)
+      , text_color = TBL_TEXT, text_size = size.small, bgcolor = tf_age_color(abv_ma20, bars_ma20))
     table.cell(trendTable, 2, row, (abv_ma200 ? "▲" : "▼") + bc(bars_ma200)
-      , text_color = TBL_TEXT, text_size = size.small, bgcolor = abv_ma200 ? TBL_GREEN : TBL_RED)
+      , text_color = TBL_TEXT, text_size = size.small, bgcolor = tf_age_color(abv_ma200, bars_ma200))
     table.cell(trendTable, 3, row, (macd_bull ? "▲" : "▼") + bc(bars_macd)
-      , text_color = TBL_TEXT, text_size = size.small, bgcolor = macd_bull ? TBL_GREEN : TBL_RED)
+      , text_color = TBL_TEXT, text_size = size.small, bgcolor = tf_age_color(macd_bull, bars_macd))
     table.cell(trendTable, 4, row, str.tostring(math.round(rsi_val, 1)) + (na(bars_rsi) ? "" : "—" + bc(bars_rsi))
-      , text_color = TBL_TEXT, text_size = size.small, bgcolor = rsi_bull ? TBL_GREEN : TBL_RED)
+      , text_color = TBL_TEXT, text_size = size.small, bgcolor = tf_age_color(rsi_bull, bars_rsi))
 
 if show_trend_table and barstate.islast
     // Header
