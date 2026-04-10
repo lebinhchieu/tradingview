@@ -48,14 +48,14 @@ macd   = maFast - maSlow
 signal = ta.ema(macd, sigLenInput)
 hist   = macd - signal
 
-// ─── MACD Normalization — scale relative to prior-period range (values may exceed 0-100) ───
-macdHigh   = ta.highest(macd[1],   normPeriod)
-macdLow    = ta.lowest(macd[1],    normPeriod)
-sigHigh    = ta.highest(signal[1], normPeriod)
-sigLow     = ta.lowest(signal[1],  normPeriod)
+// ─── MACD Normalization — scale relative to current-period range (values may exceed 0-100) ───
+macdHigh   = ta.highest(macd,   normPeriod)
+macdLow    = ta.lowest(macd,    normPeriod)
+sigHigh    = ta.highest(signal, normPeriod)
+sigLow     = ta.lowest(signal,  normPeriod)
 macdNorm   = macdHigh != macdLow ? (macd   - macdLow) / (macdHigh - macdLow) * 60 + 20 : 50.0
 signalNorm = sigHigh  != sigLow  ? (signal - sigLow)  / (sigHigh  - sigLow)  * 60 + 20 : 50.0
-histAbsMax = math.max(math.abs(ta.highest(hist[1], normPeriod)), math.abs(ta.lowest(hist[1], normPeriod)))
+histAbsMax = math.max(math.abs(ta.highest(hist, normPeriod)), math.abs(ta.lowest(hist, normPeriod)))
 histNorm   = histAbsMax != 0.0 ? hist / histAbsMax * 30 + 50 : 50.0
 
 // Display lookback values — normalized, ready to plot directly (no +50 needed)
@@ -84,23 +84,22 @@ f_divergenceState(oscRaw, oscDisp, lbLeft, lbRight, rngLow, rngHigh, enforceZone
     bsPl = ta.barssince(plFound)
     bsPh = ta.barssince(phFound)
 
-    oscLBR  = oscRaw[lbRight]
-    dispLBR = oscDisp[lbRight]
-    lowLBR  = low[lbRight]
-    highLBR = high[lbRight]
+    oscLBR   = oscRaw[lbRight]
+    dispLBR  = oscDisp[lbRight]
+    closeLBR = close[lbRight]
 
-    lastPlOsc   = ta.valuewhen(plFound, oscLBR,  0)
-    lastPlPrice = ta.valuewhen(plFound, lowLBR,  0)
-    lastPhOsc   = ta.valuewhen(phFound, oscLBR,  0)
-    lastPhPrice = ta.valuewhen(phFound, highLBR, 0)
+    lastPlOsc   = ta.valuewhen(plFound, oscLBR,   0)
+    lastPlPrice = ta.valuewhen(plFound, closeLBR, 0)
+    lastPhOsc   = ta.valuewhen(phFound, oscLBR,   0)
+    lastPhPrice = ta.valuewhen(phFound, closeLBR, 0)
 
-    prevPlOsc   = ta.valuewhen(plFound, oscLBR,  1)
-    prevPlPrice = ta.valuewhen(plFound, lowLBR,  1)
-    prevPhOsc   = ta.valuewhen(phFound, oscLBR,  1)
-    prevPhPrice = ta.valuewhen(phFound, highLBR, 1)
+    prevPlOsc   = ta.valuewhen(plFound, oscLBR,   1)
+    prevPlPrice = ta.valuewhen(plFound, closeLBR, 1)
+    prevPhOsc   = ta.valuewhen(phFound, oscLBR,   1)
+    prevPhPrice = ta.valuewhen(phFound, closeLBR, 1)
 
-    bull = plFound and oscLBR > prevPlOsc and lowLBR < prevPlPrice and f_isInRange(bsPl[1], rngLow, rngHigh)
-    bear = phFound and oscLBR < prevPhOsc and highLBR > prevPhPrice and f_isInRange(bsPh[1], rngLow, rngHigh)
+    bull = plFound and oscLBR > prevPlOsc and closeLBR < prevPlPrice and f_isInRange(bsPl[1], rngLow, rngHigh)
+    bear = phFound and oscLBR < prevPhOsc and closeLBR > prevPhPrice and f_isInRange(bsPh[1], rngLow, rngHigh)
 
     cbsBull = ta.barssince(bull)
     cbsBear = ta.barssince(bear)
@@ -111,8 +110,8 @@ f_divergenceState(oscRaw, oscDisp, lbLeft, lbRight, rngLow, rngHigh, enforceZone
         _killBullLatched := false
     if bear
         _killBearLatched := false
-    bullPivotLevel = ta.valuewhen(bull, lowLBR, 0)
-    bearPivotLevel = ta.valuewhen(bear, highLBR, 0)
+    bullPivotLevel = ta.valuewhen(bull, closeLBR, 0)
+    bearPivotLevel = ta.valuewhen(bear, closeLBR, 0)
     if not na(cbsBull) and cbsBull <= rngHigh and close < bullPivotLevel
         _killBullLatched := true
     if not na(cbsBear) and cbsBear <= rngHigh and close > bearPivotLevel
@@ -120,22 +119,22 @@ f_divergenceState(oscRaw, oscDisp, lbLeft, lbRight, rngLow, rngHigh, enforceZone
     killBull = _killBullLatched and not na(cbsBull) and cbsBull <= rngHigh
     killBear = _killBearLatched and not na(cbsBear) and cbsBear <= rngHigh
 
-    // Search for potential pivot extremes starting from bar 1 (exclude current bar — it's still forming)
-    potBullOff = f_barsAgo(ta.lowestbars(oscRaw[1],  lbLeft)) + 1
-    potBearOff = f_barsAgo(ta.highestbars(oscRaw[1], lbLeft)) + 1
+    // Search for potential pivot extremes including current bar
+    potBullOff = f_barsAgo(ta.lowestbars(oscRaw, lbLeft))
+    potBearOff = f_barsAgo(ta.highestbars(oscRaw, lbLeft))
     potBullOsc = oscRaw[potBullOff]
     potBearOsc = oscRaw[potBearOff]
     potBullDisp = oscDisp[potBullOff]
     potBearDisp = oscDisp[potBearOff]
-    potBullPrice = low[potBullOff]
-    potBearPrice = high[potBearOff]
+    potBullPrice = close[potBullOff]
+    potBearPrice = close[potBearOff]
     // Distance from actual confirmed pivot bar (bsPl + lbRight ago) to potential pivot bar (potBullOff ago)
     potBsBull = bsPl + lbRight - potBullOff
     potBsBear = bsPh + lbRight - potBearOff
 
     // Price local-extreme: require price extreme within 2 bars of oscillator extreme
-    potPriceLowOff  = f_barsAgo(ta.lowestbars(low[1],  lbLeft)) + 1
-    potPriceHighOff = f_barsAgo(ta.highestbars(high[1], lbLeft)) + 1
+    potPriceLowOff  = f_barsAgo(ta.lowestbars(close, lbLeft))
+    potPriceHighOff = f_barsAgo(ta.highestbars(close, lbLeft))
     potBullPriceExtreme = math.abs(potBullOff - potPriceLowOff) <= 2
     potBearPriceExtreme = math.abs(potBearOff - potPriceHighOff) <= 2
 
@@ -159,10 +158,10 @@ f_potDiv(rsiLen, fast, slow, sig, lbLeft, lbRight, rngLow, rngHigh) =>
     mCrossDown = ta.crossunder(macdV, sigV)
 
     // Normalize MACD and histogram first so confirmed pivots match the displayed series.
-    macdVHigh    = ta.highest(macdV[1], normPeriod)
-    macdVLow     = ta.lowest(macdV[1],  normPeriod)
+    macdVHigh    = ta.highest(macdV, normPeriod)
+    macdVLow     = ta.lowest(macdV,  normPeriod)
     macdVNorm    = macdVHigh != macdVLow ? (macdV - macdVLow) / (macdVHigh - macdVLow) * 60 + 20 : 50.0
-    histVAbsMax  = math.max(math.abs(ta.highest(histV[1], normPeriod)), math.abs(ta.lowest(histV[1], normPeriod)))
+    histVAbsMax  = math.max(math.abs(ta.highest(histV, normPeriod)), math.abs(ta.lowest(histV, normPeriod)))
     histVNorm    = histVAbsMax != 0.0 ? histV / histVAbsMax * 30 + 50 : 50.0
 
     [_, _, _, _, rBull, rBear, cbsRBull, cbsRBear, kRBull, kRBear, _, _, _, _] =
